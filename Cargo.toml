@@ -1,0 +1,40 @@
+[package]
+name = "draf"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A strongly typed TypeScript compiler with LLVM backend"
+license = "MIT"
+repository = "https://github.com/yourusername/draf"
+
+[dependencies]
+inkwell = { version = "0.4", features = ["llvm15-0"] }
+clap = { version = "4.4", features = ["derive"] }
+logos = "0.13"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+env_logger = "0.10"
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3.8"
+
+[[bin]]
+name = "draf"
+path = "src/main.rs"
+
+[lib]
+name = "draf"
+path = "src/lib.rs"
+
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true

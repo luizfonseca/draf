@@ -1,0 +1,8 @@
+target
+*.ll
+*.o
+/console_*
+/manual_*
+/simple*
+/boolean_*
+.DS_Store
