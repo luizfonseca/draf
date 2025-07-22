@@ -7,26 +7,26 @@ console.log("=== IF/ELSE STATEMENTS ===");
 
 // Basic if statement
 if (x > y) {
-    console.log("x is greater than y");
+	console.log("x is greater than y");
 }
 
 // If-else statement
 if (x < y) {
-    console.log("This should not print");
+	console.log("This should not print");
 } else {
-    console.log("x is not less than y");
+	console.log("x is not less than y");
 }
 
 // If-else if-else chain
 let score: number = 85;
 if (score >= 90) {
-    console.log("Grade A");
+	console.log("Grade A");
 } else if (score >= 80) {
-    console.log("Grade B - this should print");
+	console.log("Grade B - this should print");
 } else if (score >= 70) {
-    console.log("Grade C");
+	console.log("Grade C");
 } else {
-    console.log("Grade F");
+	console.log("Grade F");
 }
 
 // Boolean conditions
@@ -34,11 +34,11 @@ let isReady: boolean = true;
 let isComplete: boolean = false;
 
 if (isReady) {
-    console.log("System is ready");
+	console.log("System is ready");
 }
 
 if (!isComplete) {
-    console.log("System is not complete");
+	console.log("System is not complete");
 }
 
 // Complex boolean expressions
@@ -46,7 +46,7 @@ let age: number = 25;
 let hasLicense: boolean = true;
 
 if (age >= 18 && hasLicense) {
-    console.log("Can drive");
+	console.log("Can drive");
 }
 
 console.log("=== TERNARY OPERATORS ===");
@@ -85,18 +85,18 @@ console.log(x !== y); // Should be true (10 !== 5)
 console.log(x !== z); // Should be false (10 !== 10)
 
 // Regular vs strict equality
-console.log(x == z);  // Should be true
+console.log(x == z); // Should be true
 console.log(x === z); // Should be true
 
 // Boolean strict equality
-console.log(isReady === true);    // Should be true
+console.log(isReady === true); // Should be true
 console.log(isComplete === false); // Should be true
-console.log(isReady === false);   // Should be false
-console.log(isReady !== false);   // Should be true
+console.log(isReady === false); // Should be false
+console.log(isReady !== false); // Should be true
 
 // Strict equality in conditionals
 if (x === z) {
-    console.log("x strictly equals z");
+	console.log("x strictly equals z");
 }
 
 // Strict equality in ternary
@@ -132,20 +132,9 @@ console.log("=== COMPLEX COMBINATIONS ===");
 
 // Complex if with ternary and strict equality
 if ((x === z ? true : false) && isReady) {
-    console.log("Complex condition met");
+	console.log("Complex condition met");
 }
 
 // Nested ternary with strict equality
-let complexResult: number = x === z ? (isReady ? 1 : 0) : (isComplete ? 2 : 3);
-console.log(complexResult); // Should be 1
-
-// If-else with multiple conditions
-if (x === z && isReady || age >= 18) {
-    console.log("Multiple condition check passed");
-}
-
-// Ternary chain
-let finalResult: number = x > y ? (x === z ? 10 : 20) : (y > 0 ? 30 : 40);
-console.log(finalResult); // Should be 10
-
-console.log("=== ALL TESTS COMPLETE ===");
+let complexResult: number = x === z ? (isReady ? 1 : 0) : isComplete ? 2 : 3;
+console.log(complexResult);

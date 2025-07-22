@@ -1114,36 +1114,49 @@ impl<'a> Parser<'a> {
 
                     self.consume(TokenKind::LeftParen, "Expected '(' after console method")?;
 
-                    // Skip newlines after opening parenthesis
+                    // Skip any newlines and whitespace after opening parenthesis
                     while self.check(&TokenKind::Newline) {
                         self.advance();
                     }
 
                     let mut arguments = Vec::new();
-                    if !self.check(&TokenKind::RightParen) {
-                        loop {
-                            arguments.push(self.parse_expression()?);
 
-                            // Skip newlines after expression
-                            while self.check(&TokenKind::Newline) {
-                                self.advance();
-                            }
+                    // Parse arguments with comprehensive newline handling
+                    while !self.check(&TokenKind::RightParen) && !self.is_at_end() {
+                        // Skip any leading newlines before argument
+                        while self.check(&TokenKind::Newline) {
+                            self.advance();
+                        }
 
-                            if !self.check(&TokenKind::Comma) {
-                                break;
-                            }
+                        // Break if we hit the closing paren after skipping newlines
+                        if self.check(&TokenKind::RightParen) {
+                            break;
+                        }
+
+                        // Parse the argument
+                        arguments.push(self.parse_expression()?);
+
+                        // Skip newlines after expression
+                        while self.check(&TokenKind::Newline) {
+                            self.advance();
+                        }
+
+                        // Check for comma or end
+                        if self.check(&TokenKind::Comma) {
                             self.advance(); // consume ','
 
                             // Skip newlines after comma
                             while self.check(&TokenKind::Newline) {
                                 self.advance();
                             }
+                        } else {
+                            // No comma, so this should be the last argument
+                            // Skip any remaining newlines before closing paren
+                            while self.check(&TokenKind::Newline) {
+                                self.advance();
+                            }
+                            break;
                         }
-                    }
-
-                    // Skip newlines before closing parenthesis
-                    while self.check(&TokenKind::Newline) {
-                        self.advance();
                     }
 
                     self.consume(
