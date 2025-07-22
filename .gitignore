@@ -6,3 +6,6 @@ target
 /simple*
 /boolean_*
 .DS_Store
+gc
+/*_test
+/variable_*
