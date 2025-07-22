@@ -464,10 +464,15 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let right_val = self.generate_expression(typed_right)?;
 
                 // Handle string concatenation and coercion
+                // Check if this should be string concatenation based on:
+                // 1. Either operand is a string type
+                // 2. The result type is string
+                // 3. Either actual value is a pointer (string)
+                let left_is_string = left_type == Type::String || left_val.is_pointer_value();
+                let right_is_string = right_type == Type::String || right_val.is_pointer_value();
+
                 if operator == BinaryOperator::Add
-                    && (left_type == Type::String
-                        || right_type == Type::String
-                        || expr.type_info == Type::String)
+                    && (left_is_string || right_is_string || expr.type_info == Type::String)
                 {
                     return self.generate_string_concatenation(
                         left_val,
