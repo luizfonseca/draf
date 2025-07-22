@@ -2,6 +2,17 @@
 
 A compiler for a strongly typed variant of TypeScript, targeting LLVM for high-performance native code generation.
 
+
+## Running TS tests
+To run specific tests in the `tests` directory, use the following command:
+
+```bash
+make bin testfile=./tests/<fileName>.ts
+```
+
+This command compiles the specified TypeScript file and runs the tests defined within it. Replace `<fileName>` with the name of the test file you want to execute.
+
+
 ## Goals
 
 - **Strong Typing**: No implicit type conversions, strict type checking at compile time
