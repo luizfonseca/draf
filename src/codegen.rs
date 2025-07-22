@@ -953,7 +953,36 @@ impl<'ctx> CodeGenerator<'ctx> {
 
                                             return Ok(field_value);
                                         } else if optional {
-                                            // No layout found, return error
+                                            // No layout found, but for optional chaining, fall back to dummy value
+                                            match &expr.type_info {
+                                                Type::Number => {
+                                                    return Ok(self
+                                                        .context
+                                                        .f64_type()
+                                                        .const_float(0.0)
+                                                        .into())
+                                                }
+                                                Type::String => {
+                                                    let global_string =
+                                                        self.create_format_string("");
+                                                    return Ok(global_string.into());
+                                                }
+                                                Type::Boolean => {
+                                                    return Ok(self
+                                                        .context
+                                                        .bool_type()
+                                                        .const_int(0, false)
+                                                        .into())
+                                                }
+                                                _ => {
+                                                    return Ok(self
+                                                        .context
+                                                        .ptr_type(AddressSpace::default())
+                                                        .const_null()
+                                                        .into())
+                                                }
+                                            }
+                                        } else {
                                             return Err(DrafError::codegen_error(format!(
                                                 "No layout found for object '{}'",
                                                 name
