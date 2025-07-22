@@ -28,6 +28,8 @@ for (let m = 0; ; m = m + 1) {
 	if (m >= 3) {
 		break;
 	}
+
+	console.log("testing=", m);
 	result4 = result4 + m;
 	count = count + 1;
 }
