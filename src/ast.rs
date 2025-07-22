@@ -423,6 +423,8 @@ pub enum BinaryOperator {
     // Comparison
     Equal,
     NotEqual,
+    StrictEqual,
+    StrictNotEqual,
     LessThan,
     LessEqual,
     GreaterThan,
@@ -431,6 +433,7 @@ pub enum BinaryOperator {
     // Logical
     LogicalAnd,
     LogicalOr,
+    NullishCoalescing,
 }
 
 impl fmt::Display for BinaryOperator {
@@ -443,12 +446,15 @@ impl fmt::Display for BinaryOperator {
             BinaryOperator::Modulo => "%",
             BinaryOperator::Equal => "==",
             BinaryOperator::NotEqual => "!=",
+            BinaryOperator::StrictEqual => "===",
+            BinaryOperator::StrictNotEqual => "!==",
             BinaryOperator::LessThan => "<",
             BinaryOperator::LessEqual => "<=",
             BinaryOperator::GreaterThan => ">",
             BinaryOperator::GreaterEqual => ">=",
             BinaryOperator::LogicalAnd => "&&",
             BinaryOperator::LogicalOr => "||",
+            BinaryOperator::NullishCoalescing => "??",
         };
         write!(f, "{}", symbol)
     }

@@ -153,6 +153,50 @@ impl SemanticAnalyzer {
                 })
             }
 
+            Statement::If {
+                condition,
+                then_branch,
+                else_branch,
+                location,
+            } => {
+                let typed_condition = self.analyze_expression(condition)?;
+
+                // Condition should be boolean
+                if !matches!(typed_condition.type_info, Type::Boolean) {
+                    return Err(DrafError::semantic_error(
+                        location.line,
+                        location.column,
+                        "If condition must be boolean",
+                    ));
+                }
+
+                let typed_then = Box::new(self.analyze_statement(*then_branch)?);
+                let typed_else = if let Some(else_stmt) = else_branch {
+                    Some(Box::new(self.analyze_statement(*else_stmt)?))
+                } else {
+                    None
+                };
+
+                Ok(TypedStatement::If {
+                    condition: typed_condition,
+                    then_branch: typed_then,
+                    else_branch: typed_else,
+                    location,
+                })
+            }
+
+            Statement::Block(block) => {
+                let mut typed_statements = Vec::new();
+                for stmt in block.statements {
+                    typed_statements.push(self.analyze_statement(stmt)?);
+                }
+
+                Ok(TypedStatement::Block {
+                    statements: typed_statements,
+                    location: block.location,
+                })
+            }
+
             // Placeholder implementations for other statement types
             _ => Err(DrafError::semantic_error(
                 statement.location().line,
@@ -214,12 +258,15 @@ impl SemanticAnalyzer {
                     BinaryOperator::Modulo => BinaryOp::Mod,
                     BinaryOperator::Equal => BinaryOp::Eq,
                     BinaryOperator::NotEqual => BinaryOp::Ne,
+                    BinaryOperator::StrictEqual => BinaryOp::StrictEq,
+                    BinaryOperator::StrictNotEqual => BinaryOp::StrictNe,
                     BinaryOperator::LessThan => BinaryOp::Lt,
                     BinaryOperator::LessEqual => BinaryOp::Le,
                     BinaryOperator::GreaterThan => BinaryOp::Gt,
                     BinaryOperator::GreaterEqual => BinaryOp::Ge,
                     BinaryOperator::LogicalAnd => BinaryOp::And,
                     BinaryOperator::LogicalOr => BinaryOp::Or,
+                    BinaryOperator::NullishCoalescing => BinaryOp::NullishCoalescing,
                 };
 
                 if let Some(result_type) = typed_left
@@ -363,6 +410,46 @@ impl SemanticAnalyzer {
                 })
             }
 
+            Expression::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+                location,
+            } => {
+                let typed_condition = self.analyze_expression(*condition)?;
+                let typed_then = self.analyze_expression(*then_expr)?;
+                let typed_else = self.analyze_expression(*else_expr)?;
+
+                // Condition should be boolean
+                if !matches!(typed_condition.type_info, Type::Boolean) {
+                    return Err(DrafError::semantic_error(
+                        location.line,
+                        location.column,
+                        "Ternary condition must be boolean",
+                    ));
+                }
+
+                // Both branches should have compatible types
+                let result_type = if typed_then.type_info == typed_else.type_info {
+                    typed_then.type_info.clone()
+                } else {
+                    // For now, we'll use the then branch type
+                    // In a more sophisticated implementation, we'd find a common type
+                    typed_then.type_info.clone()
+                };
+
+                Ok(TypedExpression {
+                    expression: Expression::Conditional {
+                        condition: Box::new(typed_condition.expression),
+                        then_expr: Box::new(typed_then.expression),
+                        else_expr: Box::new(typed_else.expression),
+                        location,
+                    },
+                    type_info: result_type,
+                    operand_types: None,
+                })
+            }
+
             // Placeholder for other expression types
             _ => Err(DrafError::semantic_error(
                 expression.location().line,
@@ -393,6 +480,16 @@ pub enum TypedStatement {
     },
     ExpressionStatement {
         expression: TypedExpression,
+        location: SourceLocation,
+    },
+    If {
+        condition: TypedExpression,
+        then_branch: Box<TypedStatement>,
+        else_branch: Option<Box<TypedStatement>>,
+        location: SourceLocation,
+    },
+    Block {
+        statements: Vec<TypedStatement>,
         location: SourceLocation,
     },
     // Other statement types will be added as needed

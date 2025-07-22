@@ -194,6 +194,10 @@ pub enum TokenKind {
     Percent,
     #[token("=")]
     Equal,
+    #[token("===")]
+    StrictEqual,
+    #[token("!==")]
+    StrictNotEqual,
     #[token("==")]
     EqualEqual,
     #[token("!=")]
@@ -210,6 +214,8 @@ pub enum TokenKind {
     AndAnd,
     #[token("||")]
     OrOr,
+    #[token("??")]
+    NullishCoalescing,
     #[token("!")]
     Bang,
 
@@ -298,6 +304,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Slash => "'/'",
             TokenKind::Percent => "'%'",
             TokenKind::Equal => "'='",
+            TokenKind::StrictEqual => "'==='",
+            TokenKind::StrictNotEqual => "'!=='",
             TokenKind::EqualEqual => "'=='",
             TokenKind::NotEqual => "'!='",
             TokenKind::Less => "'<'",
@@ -306,6 +314,7 @@ impl fmt::Display for TokenKind {
             TokenKind::GreaterEqual => "'>='",
             TokenKind::AndAnd => "'&&'",
             TokenKind::OrOr => "'||'",
+            TokenKind::NullishCoalescing => "'??'",
             TokenKind::Bang => "'!'",
             TokenKind::LeftParen => "'('",
             TokenKind::RightParen => "')'",
@@ -467,13 +476,17 @@ pub fn is_keyword(s: &str) -> bool {
 pub fn get_precedence(token: &TokenKind) -> Option<u8> {
     match token {
         TokenKind::OrOr => Some(1),
-        TokenKind::AndAnd => Some(2),
-        TokenKind::EqualEqual | TokenKind::NotEqual => Some(3),
+        TokenKind::NullishCoalescing => Some(2),
+        TokenKind::AndAnd => Some(3),
+        TokenKind::EqualEqual
+        | TokenKind::NotEqual
+        | TokenKind::StrictEqual
+        | TokenKind::StrictNotEqual => Some(4),
         TokenKind::Less | TokenKind::LessEqual | TokenKind::Greater | TokenKind::GreaterEqual => {
-            Some(4)
+            Some(5)
         }
-        TokenKind::Plus | TokenKind::Minus => Some(5),
-        TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Some(6),
+        TokenKind::Plus | TokenKind::Minus => Some(6),
+        TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Some(7),
         _ => None,
     }
 }

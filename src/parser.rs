@@ -85,6 +85,11 @@ impl<'a> Parser<'a> {
 
     /// Parse a statement
     fn parse_statement(&mut self) -> DrafResult<Statement> {
+        // Skip any leading newlines
+        while self.check(&TokenKind::Newline) {
+            self.advance();
+        }
+
         match &self.current_token {
             Some(token) => match &token.kind {
                 TokenKind::Let | TokenKind::Const | TokenKind::Var => {
@@ -180,13 +185,46 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    /// Parse if statement (placeholder)
+    /// Parse if statement with support for else and else if
     fn parse_if_statement(&mut self) -> DrafResult<Statement> {
-        Err(DrafError::parse_error(
-            self.current_token.unwrap().line,
-            self.current_token.unwrap().column,
-            "If statements not yet implemented",
-        ))
+        let start_location = self.current_location();
+        self.advance(); // consume 'if'
+
+        self.consume(TokenKind::LeftParen, "Expected '(' after 'if'")?;
+        let condition = self.parse_expression()?;
+        self.consume(TokenKind::RightParen, "Expected ')' after if condition")?;
+
+        // Skip any newlines before the then branch
+        while self.check(&TokenKind::Newline) {
+            self.advance();
+        }
+
+        let then_branch = Box::new(self.parse_statement()?);
+
+        let else_branch = if self.check(&TokenKind::Else) {
+            self.advance(); // consume 'else'
+
+            // Skip any newlines after 'else'
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            // Check if this is an else if
+            if self.check(&TokenKind::If) {
+                Some(Box::new(self.parse_if_statement()?))
+            } else {
+                Some(Box::new(self.parse_statement()?))
+            }
+        } else {
+            None
+        };
+
+        Ok(Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+            location: start_location,
+        })
     }
 
     /// Parse while statement (placeholder)
@@ -216,13 +254,33 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    /// Parse block statement (placeholder)
+    /// Parse block statement
     fn parse_block_statement(&mut self) -> DrafResult<Statement> {
-        Err(DrafError::parse_error(
-            self.current_token.unwrap().line,
-            self.current_token.unwrap().column,
-            "Block statements not yet implemented",
-        ))
+        let start_location = self.current_location();
+        self.consume(TokenKind::LeftBrace, "Expected '{'")?;
+
+        let mut statements = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            // Skip any newlines between statements
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            // Check again for right brace after skipping newlines
+            if self.check(&TokenKind::RightBrace) {
+                break;
+            }
+
+            statements.push(self.parse_statement()?);
+        }
+
+        self.consume(TokenKind::RightBrace, "Expected '}' after block")?;
+
+        Ok(Statement::Block(Block {
+            statements,
+            location: start_location,
+        }))
     }
 
     /// Parse expression statement
@@ -244,7 +302,7 @@ impl<'a> Parser<'a> {
 
     /// Parse assignment expression
     fn parse_assignment(&mut self) -> DrafResult<Expression> {
-        let expr = self.parse_logical_or()?;
+        let expr = self.parse_ternary()?;
 
         if self.check(&TokenKind::Equal) {
             let location = self.current_location();
@@ -260,17 +318,57 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// Parse ternary conditional expression
+    fn parse_ternary(&mut self) -> DrafResult<Expression> {
+        let expr = self.parse_logical_or()?;
+
+        if self.check(&TokenKind::Question) {
+            let location = self.current_location();
+            self.advance(); // consume '?'
+            let then_expr = self.parse_expression()?;
+            self.consume(TokenKind::Colon, "Expected ':' in ternary expression")?;
+            let else_expr = self.parse_ternary()?;
+            return Ok(Expression::Conditional {
+                condition: Box::new(expr),
+                then_expr: Box::new(then_expr),
+                else_expr: Box::new(else_expr),
+                location,
+            });
+        }
+
+        Ok(expr)
+    }
+
     /// Parse logical OR expression
     fn parse_logical_or(&mut self) -> DrafResult<Expression> {
-        let mut expr = self.parse_logical_and()?;
+        let mut expr = self.parse_nullish_coalescing()?;
 
         while self.check(&TokenKind::OrOr) {
+            let location = self.current_location();
+            self.advance();
+            let right = self.parse_nullish_coalescing()?;
+            expr = Expression::Binary {
+                left: Box::new(expr),
+                operator: BinaryOperator::LogicalOr,
+                right: Box::new(right),
+                location,
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse nullish coalescing expression
+    fn parse_nullish_coalescing(&mut self) -> DrafResult<Expression> {
+        let mut expr = self.parse_logical_and()?;
+
+        while self.check(&TokenKind::NullishCoalescing) {
             let location = self.current_location();
             self.advance();
             let right = self.parse_logical_and()?;
             expr = Expression::Binary {
                 left: Box::new(expr),
-                operator: BinaryOperator::LogicalOr,
+                operator: BinaryOperator::NullishCoalescing,
                 right: Box::new(right),
                 location,
             };
@@ -306,6 +404,8 @@ impl<'a> Parser<'a> {
             let operator = match token.kind {
                 TokenKind::EqualEqual => BinaryOperator::Equal,
                 TokenKind::NotEqual => BinaryOperator::NotEqual,
+                TokenKind::StrictEqual => BinaryOperator::StrictEqual,
+                TokenKind::StrictNotEqual => BinaryOperator::StrictNotEqual,
                 _ => break,
             };
 
@@ -625,9 +725,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Consume optional semicolon
+    /// Consume optional semicolon or newline for ASI (Automatic Semicolon Insertion)
     fn consume_optional_semicolon(&mut self) {
         if self.check(&TokenKind::Semicolon) {
+            self.advance();
+        } else if self.check(&TokenKind::Newline) {
             self.advance();
         }
     }

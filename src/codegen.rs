@@ -129,6 +129,62 @@ impl<'ctx> CodeGenerator<'ctx> {
                 self.generate_expression(expression)?;
                 Ok(())
             }
+
+            TypedStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                // Generate condition
+                let condition_val = self.generate_expression(condition)?;
+                let condition_bool = condition_val.into_int_value();
+
+                // Get current function
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+
+                // Create basic blocks
+                let then_block = self.context.append_basic_block(current_fn, "then");
+                let else_block = self.context.append_basic_block(current_fn, "else");
+                let merge_block = self.context.append_basic_block(current_fn, "merge");
+
+                // Build conditional branch
+                self.builder
+                    .build_conditional_branch(condition_bool, then_block, else_block)
+                    .unwrap();
+
+                // Generate then branch
+                self.builder.position_at_end(then_block);
+                self.generate_statement(*then_branch)?;
+                self.builder
+                    .build_unconditional_branch(merge_block)
+                    .unwrap();
+
+                // Generate else branch
+                self.builder.position_at_end(else_block);
+                if let Some(else_stmt) = else_branch {
+                    self.generate_statement(*else_stmt)?;
+                }
+                self.builder
+                    .build_unconditional_branch(merge_block)
+                    .unwrap();
+
+                // Continue with merge block
+                self.builder.position_at_end(merge_block);
+                Ok(())
+            }
+
+            TypedStatement::Block { statements, .. } => {
+                for statement in statements {
+                    self.generate_statement(statement)?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -186,16 +242,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let (left_type, right_type) = if let Some((left_t, right_t)) = &expr.operand_types {
                     (left_t.clone(), right_t.clone())
                 } else {
-                    // Fallback: try to infer types
-                    match operator {
-                        BinaryOperator::Equal
-                        | BinaryOperator::NotEqual
-                        | BinaryOperator::LessThan
-                        | BinaryOperator::LessEqual
-                        | BinaryOperator::GreaterThan
-                        | BinaryOperator::GreaterEqual => (Type::Number, Type::Number),
-                        _ => (expr.type_info.clone(), expr.type_info.clone()),
-                    }
+                    // Fallback: infer types from expressions
+                    let left_type = self.infer_expression_type(&left)?;
+                    let right_type = self.infer_expression_type(&right)?;
+                    (left_type, right_type)
                 };
 
                 let typed_left = TypedExpression::new(*left, left_type.clone());
@@ -240,6 +290,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                     }
                     (Type::Number, Type::Number, BinaryOperator::Equal)
                     | (Type::Number, Type::Number, BinaryOperator::NotEqual)
+                    | (Type::Number, Type::Number, BinaryOperator::StrictEqual)
+                    | (Type::Number, Type::Number, BinaryOperator::StrictNotEqual)
                     | (Type::Number, Type::Number, BinaryOperator::LessThan)
                     | (Type::Number, Type::Number, BinaryOperator::LessEqual)
                     | (Type::Number, Type::Number, BinaryOperator::GreaterThan)
@@ -250,6 +302,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let predicate = match operator {
                             BinaryOperator::Equal => FloatPredicate::OEQ,
                             BinaryOperator::NotEqual => FloatPredicate::ONE,
+                            BinaryOperator::StrictEqual => FloatPredicate::OEQ,
+                            BinaryOperator::StrictNotEqual => FloatPredicate::ONE,
                             BinaryOperator::LessThan => FloatPredicate::OLT,
                             BinaryOperator::LessEqual => FloatPredicate::OLE,
                             BinaryOperator::GreaterThan => FloatPredicate::OGT,
@@ -266,7 +320,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                     (Type::Boolean, Type::Boolean, BinaryOperator::LogicalAnd)
                     | (Type::Boolean, Type::Boolean, BinaryOperator::LogicalOr)
                     | (Type::Boolean, Type::Boolean, BinaryOperator::Equal)
-                    | (Type::Boolean, Type::Boolean, BinaryOperator::NotEqual) => {
+                    | (Type::Boolean, Type::Boolean, BinaryOperator::NotEqual)
+                    | (Type::Boolean, Type::Boolean, BinaryOperator::StrictEqual)
+                    | (Type::Boolean, Type::Boolean, BinaryOperator::StrictNotEqual) => {
                         let left_bool = left_val.into_int_value();
                         let right_bool = right_val.into_int_value();
 
@@ -286,9 +342,33 @@ impl<'ctx> CodeGenerator<'ctx> {
                                 .builder
                                 .build_int_compare(IntPredicate::NE, left_bool, right_bool, "ne")
                                 .unwrap(),
+                            BinaryOperator::StrictEqual => self
+                                .builder
+                                .build_int_compare(
+                                    IntPredicate::EQ,
+                                    left_bool,
+                                    right_bool,
+                                    "strict_eq",
+                                )
+                                .unwrap(),
+                            BinaryOperator::StrictNotEqual => self
+                                .builder
+                                .build_int_compare(
+                                    IntPredicate::NE,
+                                    left_bool,
+                                    right_bool,
+                                    "strict_ne",
+                                )
+                                .unwrap(),
                             _ => unreachable!(),
                         };
                         Ok(result.into())
+                    }
+                    (_, _, BinaryOperator::NullishCoalescing) => {
+                        // Nullish coalescing: return left if not null/undefined, otherwise return right
+                        // For now, we'll just return the right operand
+                        // In a full implementation, we'd check for null/undefined
+                        Ok(right_val)
                     }
                     _ => Err(DrafError::codegen_error(format!(
                         "Binary operation {:?} not implemented for types {:?} and {:?}",
@@ -370,6 +450,62 @@ impl<'ctx> CodeGenerator<'ctx> {
                 self.generate_console_call(&method, arguments)?;
                 // Console calls return void, represented as a dummy value
                 Ok(self.context.i32_type().const_int(0, false).into())
+            }
+
+            Expression::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                // Generate condition
+                let typed_condition = TypedExpression::new(*condition, Type::Boolean);
+                let condition_val = self.generate_expression(typed_condition)?;
+                let condition_bool = condition_val.into_int_value();
+
+                // Get current function
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+
+                // Create basic blocks
+                let then_block = self.context.append_basic_block(current_fn, "cond_then");
+                let else_block = self.context.append_basic_block(current_fn, "cond_else");
+                let merge_block = self.context.append_basic_block(current_fn, "cond_merge");
+
+                // Build conditional branch
+                self.builder
+                    .build_conditional_branch(condition_bool, then_block, else_block)
+                    .unwrap();
+
+                // Generate then expression
+                self.builder.position_at_end(then_block);
+                let typed_then = TypedExpression::new(*then_expr, expr.type_info.clone());
+                let then_val = self.generate_expression(typed_then)?;
+                let then_block_end = self.builder.get_insert_block().unwrap();
+                self.builder
+                    .build_unconditional_branch(merge_block)
+                    .unwrap();
+
+                // Generate else expression
+                self.builder.position_at_end(else_block);
+                let typed_else = TypedExpression::new(*else_expr, expr.type_info.clone());
+                let else_val = self.generate_expression(typed_else)?;
+                let else_block_end = self.builder.get_insert_block().unwrap();
+                self.builder
+                    .build_unconditional_branch(merge_block)
+                    .unwrap();
+
+                // Create phi node in merge block
+                self.builder.position_at_end(merge_block);
+                let llvm_type = self.type_to_llvm_type(&expr.type_info)?;
+                let phi = self.builder.build_phi(llvm_type, "cond_result").unwrap();
+                phi.add_incoming(&[(&then_val, then_block_end), (&else_val, else_block_end)]);
+
+                Ok(phi.as_basic_value())
             }
 
             _ => Err(DrafError::codegen_error(
@@ -598,12 +734,15 @@ impl<'ctx> CodeGenerator<'ctx> {
                 match operator {
                     BinaryOperator::Equal
                     | BinaryOperator::NotEqual
+                    | BinaryOperator::StrictEqual
+                    | BinaryOperator::StrictNotEqual
                     | BinaryOperator::LessThan
                     | BinaryOperator::LessEqual
                     | BinaryOperator::GreaterThan
                     | BinaryOperator::GreaterEqual
                     | BinaryOperator::LogicalAnd
                     | BinaryOperator::LogicalOr => Ok(Type::Boolean),
+                    BinaryOperator::NullishCoalescing => Ok(Type::Number), // Simplified for now
                     _ => Ok(Type::Number),
                 }
             }
@@ -611,6 +750,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                 UnaryOperator::LogicalNot => Ok(Type::Boolean),
                 _ => Ok(Type::Number),
             },
+            Expression::Conditional { then_expr, .. } => {
+                // For simplicity, use the type of the then branch
+                self.infer_expression_type(then_expr)
+            }
             _ => Ok(Type::Number), // Default fallback
         }
     }

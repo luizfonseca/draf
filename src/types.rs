@@ -183,6 +183,14 @@ impl Type {
                     None
                 }
             }
+            BinaryOp::StrictEq | BinaryOp::StrictNe => {
+                // Strict equality comparison is allowed between same types
+                if self == other {
+                    Some(Type::Boolean)
+                } else {
+                    None
+                }
+            }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => match (self, other) {
                 (Type::Number, Type::Number) => Some(Type::Boolean),
                 (Type::String, Type::String) => Some(Type::Boolean),
@@ -192,6 +200,11 @@ impl Type {
                 (Type::Boolean, Type::Boolean) => Some(Type::Boolean),
                 _ => None,
             },
+            BinaryOp::NullishCoalescing => {
+                // Nullish coalescing returns the right operand if left is null/undefined
+                // For now, we'll return the type of the right operand
+                Some(other.clone())
+            }
         }
     }
 
@@ -323,6 +336,8 @@ pub enum BinaryOp {
     // Comparison
     Eq,
     Ne,
+    StrictEq,
+    StrictNe,
     Lt,
     Le,
     Gt,
@@ -331,6 +346,7 @@ pub enum BinaryOp {
     // Logical
     And,
     Or,
+    NullishCoalescing,
 }
 
 /// Unary operators supported in the type system
