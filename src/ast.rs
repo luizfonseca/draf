@@ -78,13 +78,17 @@ pub enum Statement {
     /// Interface declaration: interface Person { name: string; age: number; }
     InterfaceDeclaration {
         name: String,
+        type_parameters: Vec<TypeParameter>,
+        extends: Vec<String>,
         fields: Vec<InterfaceField>,
+        methods: Vec<InterfaceMethod>,
         location: SourceLocation,
     },
 
     /// Type alias: type UserId = number;
     TypeAlias {
         name: String,
+        type_parameters: Vec<TypeParameter>,
         type_annotation: TypeAnnotation,
         location: SourceLocation,
     },
@@ -217,29 +221,43 @@ impl Parameter {
     }
 }
 
-/// Interface field
+/// Represents a type parameter
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypeParameter {
+    pub name: String,
+    pub constraint: Option<TypeAnnotation>,
+    pub default: Option<TypeAnnotation>,
+    pub location: SourceLocation,
+}
+
+/// Represents a field in an interface
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InterfaceField {
     pub name: String,
-    pub type_annotation: TypeAnnotation,
+    pub field_type: TypeAnnotation,
+    pub optional: bool,
+    pub readonly: bool,
+    pub location: SourceLocation,
+}
+
+/// Represents a method in an interface
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceMethod {
+    pub name: String,
+    pub type_parameters: Vec<TypeParameter>,
+    pub parameters: Vec<MethodParameter>,
+    pub return_type: TypeAnnotation,
     pub optional: bool,
     pub location: SourceLocation,
 }
 
-impl InterfaceField {
-    pub fn new(
-        name: String,
-        type_annotation: TypeAnnotation,
-        optional: bool,
-        location: SourceLocation,
-    ) -> Self {
-        Self {
-            name,
-            type_annotation,
-            optional,
-            location,
-        }
-    }
+/// Represents a method parameter
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MethodParameter {
+    pub name: String,
+    pub param_type: TypeAnnotation,
+    pub optional: bool,
+    pub location: SourceLocation,
 }
 
 /// Expressions in the language
@@ -546,6 +564,10 @@ pub enum TypeAnnotation {
         types: Vec<TypeAnnotation>,
         location: SourceLocation,
     },
+    Intersection {
+        types: Vec<TypeAnnotation>,
+        location: SourceLocation,
+    },
 
     /// Object type: { a: number, b: string }
     Object {
@@ -588,6 +610,7 @@ impl TypeAnnotation {
             TypeAnnotation::Array { location, .. } => location,
             TypeAnnotation::Tuple { location, .. } => location,
             TypeAnnotation::Union { location, .. } => location,
+            TypeAnnotation::Intersection { location, .. } => location,
             TypeAnnotation::Object { location, .. } => location,
             TypeAnnotation::Function { location, .. } => location,
             TypeAnnotation::Named { location, .. } => location,
@@ -615,10 +638,15 @@ impl TypeAnnotation {
             TypeAnnotation::Union { types, .. } => {
                 Type::Union(types.iter().map(|t| t.to_type()).collect())
             }
+            TypeAnnotation::Intersection { types, .. } => {
+                // For now, treat intersection as the first type
+                // TODO: Implement proper intersection type support
+                types.first().map(|t| t.to_type()).unwrap_or(Type::Any)
+            }
             TypeAnnotation::Object { fields, .. } => {
                 let mut field_map = HashMap::new();
                 for field in fields {
-                    field_map.insert(field.name.clone(), field.type_annotation.to_type());
+                    field_map.insert(field.name.clone(), field.field_type.to_type());
                 }
                 Type::Object(field_map)
             }
@@ -660,22 +688,25 @@ impl TypeAnnotation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeAnnotationField {
     pub name: String,
-    pub type_annotation: TypeAnnotation,
+    pub field_type: TypeAnnotation,
     pub optional: bool,
+    pub readonly: bool,
     pub location: SourceLocation,
 }
 
 impl TypeAnnotationField {
     pub fn new(
         name: String,
-        type_annotation: TypeAnnotation,
+        field_type: TypeAnnotation,
         optional: bool,
+        readonly: bool,
         location: SourceLocation,
     ) -> Self {
         Self {
             name,
-            type_annotation,
+            field_type,
             optional,
+            readonly,
             location,
         }
     }

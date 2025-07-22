@@ -11,6 +11,7 @@ pub mod parser;
 pub mod semantic;
 pub mod strings;
 pub mod types;
+pub mod typing;
 
 use error::{DrafError, DrafResult};
 use std::path::Path;

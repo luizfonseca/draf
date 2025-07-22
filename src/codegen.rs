@@ -394,6 +394,16 @@ impl<'ctx> CodeGenerator<'ctx> {
                 self.builder.position_at_end(after_block);
                 Ok(())
             }
+
+            TypedStatement::TypeAlias { .. } => {
+                // Type aliases don't generate runtime code
+                Ok(())
+            }
+
+            TypedStatement::InterfaceDeclaration { .. } => {
+                // Interface declarations don't generate runtime code
+                Ok(())
+            }
         }
     }
 

@@ -6,11 +6,15 @@
 use crate::ast::*;
 use crate::error::{DrafError, DrafResult, ErrorCollector};
 use crate::types::{BinaryOp, Type, TypeContext};
+use crate::typing;
+use std::collections::HashMap;
 
 /// Semantic analyzer that performs type checking and symbol resolution
 pub struct SemanticAnalyzer {
     /// Type context for symbol resolution
     context: TypeContext,
+    /// Advanced typing context for type aliases and interfaces
+    typing_context: typing::TypeContext,
     /// Error collector for gathering multiple errors
     errors: ErrorCollector,
     /// Whether to continue analysis after errors
@@ -22,6 +26,7 @@ impl SemanticAnalyzer {
     pub fn new() -> Self {
         Self {
             context: TypeContext::new(),
+            typing_context: typing::TypeContext::new(),
             errors: ErrorCollector::new(),
             continue_on_error: true,
         }
@@ -31,6 +36,7 @@ impl SemanticAnalyzer {
     pub fn strict() -> Self {
         Self {
             context: TypeContext::new(),
+            typing_context: typing::TypeContext::new(),
             errors: ErrorCollector::new(),
             continue_on_error: false,
         }
@@ -281,6 +287,177 @@ impl SemanticAnalyzer {
                     condition: typed_condition,
                     update: typed_update,
                     body: typed_body,
+                    location,
+                })
+            }
+
+            Statement::TypeAlias {
+                name,
+                type_parameters,
+                type_annotation,
+                location,
+            } => {
+                // Convert AST type parameters to typing module type parameters
+                let typing_type_params: Vec<typing::TypeParameter> = type_parameters
+                    .iter()
+                    .map(|param| typing::TypeParameter {
+                        name: param.name.clone(),
+                        constraint: param.constraint.clone(),
+                        default: param.default.clone(),
+                        location: param.location.clone(),
+                    })
+                    .collect();
+
+                // Create the type alias
+                let type_alias = typing::TypeAlias {
+                    name: name.clone(),
+                    type_parameters: typing_type_params,
+                    target_type: type_annotation.clone(),
+                    location: location.clone(),
+                };
+
+                // Validate the type alias
+                if let Err(validation_error) =
+                    typing::type_alias::TypeAliasValidator::validate(&type_alias)
+                {
+                    return Err(DrafError::semantic_error(
+                        location.line,
+                        location.column,
+                        validation_error.to_string(),
+                    ));
+                }
+
+                // Add to typing context
+                if let Err(add_error) = self.typing_context.add_type_alias(type_alias) {
+                    return Err(DrafError::semantic_error(
+                        location.line,
+                        location.column,
+                        add_error,
+                    ));
+                }
+
+                // Also add to the basic type context for backward compatibility
+                let resolved_type = type_annotation.to_type();
+                self.context.add_alias(name.clone(), resolved_type);
+
+                Ok(TypedStatement::TypeAlias {
+                    name,
+                    type_parameters,
+                    type_annotation,
+                    location,
+                })
+            }
+
+            Statement::InterfaceDeclaration {
+                name,
+                type_parameters,
+                extends,
+                fields,
+                methods,
+                location,
+            } => {
+                // Convert AST types to typing module types
+                let typing_type_params: Vec<typing::TypeParameter> = type_parameters
+                    .iter()
+                    .map(|param| typing::TypeParameter {
+                        name: param.name.clone(),
+                        constraint: param.constraint.clone(),
+                        default: param.default.clone(),
+                        location: param.location.clone(),
+                    })
+                    .collect();
+
+                let typing_fields: Vec<typing::InterfaceField> = fields
+                    .iter()
+                    .map(|field| typing::InterfaceField {
+                        name: field.name.clone(),
+                        field_type: field.field_type.clone(),
+                        optional: field.optional,
+                        readonly: field.readonly,
+                        location: field.location.clone(),
+                    })
+                    .collect();
+
+                let typing_methods: Vec<typing::InterfaceMethod> = methods
+                    .iter()
+                    .map(|method| typing::InterfaceMethod {
+                        name: method.name.clone(),
+                        type_parameters: method
+                            .type_parameters
+                            .iter()
+                            .map(|param| typing::TypeParameter {
+                                name: param.name.clone(),
+                                constraint: param.constraint.clone(),
+                                default: param.default.clone(),
+                                location: param.location.clone(),
+                            })
+                            .collect(),
+                        parameters: method
+                            .parameters
+                            .iter()
+                            .map(|param| typing::MethodParameter {
+                                name: param.name.clone(),
+                                param_type: param.param_type.clone(),
+                                optional: param.optional,
+                                location: param.location.clone(),
+                            })
+                            .collect(),
+                        return_type: method.return_type.clone(),
+                        optional: method.optional,
+                        location: method.location.clone(),
+                    })
+                    .collect();
+
+                // Create the interface
+                let interface = typing::Interface {
+                    name: name.clone(),
+                    type_parameters: typing_type_params,
+                    extends: extends.clone(),
+                    fields: typing_fields,
+                    methods: typing_methods,
+                    location: location.clone(),
+                };
+
+                // Validate the interface
+                if let Err(validation_error) =
+                    typing::interface::InterfaceValidator::validate(&interface)
+                {
+                    return Err(DrafError::semantic_error(
+                        location.line,
+                        location.column,
+                        validation_error.to_string(),
+                    ));
+                }
+
+                // Add to typing context
+                if let Err(add_error) = self.typing_context.add_interface(interface) {
+                    return Err(DrafError::semantic_error(
+                        location.line,
+                        location.column,
+                        add_error,
+                    ));
+                }
+
+                // Create a basic Type representation for the interface
+                let mut interface_fields = HashMap::new();
+                for field in &fields {
+                    interface_fields.insert(field.name.clone(), field.field_type.to_type());
+                }
+
+                let interface_type = Type::Interface {
+                    name: name.clone(),
+                    fields: interface_fields,
+                };
+
+                // Add to basic type context for backward compatibility
+                self.context.add_alias(name.clone(), interface_type);
+
+                Ok(TypedStatement::InterfaceDeclaration {
+                    name,
+                    type_parameters,
+                    extends,
+                    fields,
+                    methods,
                     location,
                 })
             }
@@ -648,6 +825,20 @@ pub enum TypedStatement {
         condition: Option<TypedExpression>,
         update: Option<TypedExpression>,
         body: Box<TypedStatement>,
+        location: SourceLocation,
+    },
+    TypeAlias {
+        name: String,
+        type_parameters: Vec<TypeParameter>,
+        type_annotation: TypeAnnotation,
+        location: SourceLocation,
+    },
+    InterfaceDeclaration {
+        name: String,
+        type_parameters: Vec<TypeParameter>,
+        extends: Vec<String>,
+        fields: Vec<InterfaceField>,
+        methods: Vec<InterfaceMethod>,
         location: SourceLocation,
     },
     // Other statement types will be added as needed

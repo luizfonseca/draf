@@ -170,22 +170,310 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    /// Parse interface declaration (placeholder)
+    /// Parse interface declaration
     fn parse_interface_declaration(&mut self) -> DrafResult<Statement> {
-        Err(DrafError::parse_error(
-            self.current_token.unwrap().line,
-            self.current_token.unwrap().column,
-            "Interface declarations not yet implemented",
-        ))
+        let location = self.current_location();
+        self.advance(); // consume 'interface'
+
+        // Parse interface name
+        let name = if let Some(token) = self.current_token {
+            if matches!(token.kind, TokenKind::Identifier) {
+                let name = token.lexeme.clone();
+                self.advance();
+                name
+            } else {
+                return Err(DrafError::parse_error(
+                    token.line,
+                    token.column,
+                    "Expected interface name",
+                ));
+            }
+        } else {
+            return Err(DrafError::parse_error(
+                location.line,
+                location.column,
+                "Expected interface name",
+            ));
+        };
+
+        // Parse type parameters if present
+        let type_parameters = if self.check(&TokenKind::Less) {
+            self.parse_type_parameters()?
+        } else {
+            Vec::new()
+        };
+
+        // Parse extends clause if present
+        let extends = if self.check(&TokenKind::Identifier)
+            && self.current_token.as_ref().unwrap().lexeme == "extends"
+        {
+            self.advance(); // consume 'extends'
+            let mut extended_interfaces = Vec::new();
+
+            loop {
+                if let Some(token) = self.current_token {
+                    if matches!(token.kind, TokenKind::Identifier) {
+                        extended_interfaces.push(token.lexeme.clone());
+                        self.advance();
+
+                        if self.check(&TokenKind::Comma) {
+                            self.advance(); // consume ','
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            extended_interfaces
+        } else {
+            Vec::new()
+        };
+
+        self.consume(
+            TokenKind::LeftBrace,
+            "Expected '{' after interface declaration",
+        )?;
+
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            // Skip newlines
+            if self.check(&TokenKind::Newline) {
+                self.advance();
+                continue;
+            }
+
+            let member_location = self.current_location();
+
+            // Check for readonly modifier
+            let readonly = if self.check(&TokenKind::Identifier)
+                && self.current_token.as_ref().unwrap().lexeme == "readonly"
+            {
+                self.advance(); // consume 'readonly'
+                true
+            } else {
+                false
+            };
+
+            // Parse member name
+            let member_name = if let Some(token) = self.current_token {
+                if matches!(token.kind, TokenKind::Identifier) {
+                    let name = token.lexeme.clone();
+                    self.advance();
+                    name
+                } else {
+                    return Err(DrafError::parse_error(
+                        token.line,
+                        token.column,
+                        "Expected member name",
+                    ));
+                }
+            } else {
+                return Err(DrafError::parse_error(
+                    member_location.line,
+                    member_location.column,
+                    "Expected member name",
+                ));
+            };
+
+            let optional = if self.check(&TokenKind::Question) {
+                self.advance(); // consume '?'
+                true
+            } else {
+                false
+            };
+
+            // Check if this is a method (has parentheses after optional marker)
+            let is_method = if optional {
+                // Look ahead after the colon to see if there's a function type
+                self.consume(TokenKind::Colon, "Expected ':' after member name")?;
+                self.check(&TokenKind::LeftParen)
+            } else {
+                // Check if we have parentheses directly (method without optional marker)
+                if self.check(&TokenKind::LeftParen) {
+                    true
+                } else {
+                    self.consume(TokenKind::Colon, "Expected ':' after member name")?;
+                    self.check(&TokenKind::LeftParen)
+                }
+            };
+
+            if is_method {
+                // Parse method
+                let method_type = self.parse_function_type()?;
+                if let TypeAnnotation::Function {
+                    parameters,
+                    return_type,
+                    ..
+                } = method_type
+                {
+                    methods.push(InterfaceMethod {
+                        name: member_name,
+                        type_parameters: Vec::new(), // TODO: Support method generics
+                        parameters: parameters
+                            .iter()
+                            .enumerate()
+                            .map(|(i, param_type)| MethodParameter {
+                                name: format!("param{}", i),
+                                param_type: param_type.clone(),
+                                optional: false,
+                                location: member_location.clone(),
+                            })
+                            .collect(),
+                        return_type: *return_type,
+                        optional,
+                        location: member_location,
+                    });
+                }
+            } else {
+                // Parse field
+                let field_type = self.parse_type_annotation()?;
+                fields.push(InterfaceField {
+                    name: member_name,
+                    field_type,
+                    optional,
+                    readonly,
+                    location: member_location,
+                });
+            }
+
+            // Optional semicolon or comma
+            if self.check(&TokenKind::Semicolon) || self.check(&TokenKind::Comma) {
+                self.advance();
+            }
+        }
+
+        self.consume(TokenKind::RightBrace, "Expected '}' after interface body")?;
+
+        Ok(Statement::InterfaceDeclaration {
+            name,
+            type_parameters,
+            extends,
+            fields,
+            methods,
+            location,
+        })
     }
 
-    /// Parse type alias (placeholder)
+    /// Parse type alias
     fn parse_type_alias(&mut self) -> DrafResult<Statement> {
-        Err(DrafError::parse_error(
-            self.current_token.unwrap().line,
-            self.current_token.unwrap().column,
-            "Type aliases not yet implemented",
-        ))
+        let location = self.current_location();
+        self.advance(); // consume 'type'
+
+        // Parse type alias name
+        let name = if let Some(token) = self.current_token {
+            if matches!(token.kind, TokenKind::Identifier) {
+                let name = token.lexeme.clone();
+                self.advance();
+                name
+            } else {
+                return Err(DrafError::parse_error(
+                    token.line,
+                    token.column,
+                    "Expected type alias name",
+                ));
+            }
+        } else {
+            return Err(DrafError::parse_error(
+                location.line,
+                location.column,
+                "Expected type alias name",
+            ));
+        };
+
+        // Parse type parameters if present
+        let type_parameters = if self.check(&TokenKind::Less) {
+            self.parse_type_parameters()?
+        } else {
+            Vec::new()
+        };
+
+        self.consume(TokenKind::Equal, "Expected '=' after type alias name")?;
+        let type_annotation = self.parse_type_annotation()?;
+
+        // Optional semicolon
+        if self.check(&TokenKind::Semicolon) {
+            self.advance();
+        }
+
+        Ok(Statement::TypeAlias {
+            name,
+            type_parameters,
+            type_annotation,
+            location,
+        })
+    }
+
+    /// Parse type parameters <T, U extends Something>
+    fn parse_type_parameters(&mut self) -> DrafResult<Vec<TypeParameter>> {
+        let mut parameters = Vec::new();
+
+        self.consume(TokenKind::Less, "Expected '<' for type parameters")?;
+
+        while !self.check(&TokenKind::Greater) && !self.is_at_end() {
+            let param_location = self.current_location();
+
+            // Parse parameter name
+            let param_name = if let Some(token) = self.current_token {
+                if matches!(token.kind, TokenKind::Identifier) {
+                    let name = token.lexeme.clone();
+                    self.advance();
+                    name
+                } else {
+                    return Err(DrafError::parse_error(
+                        token.line,
+                        token.column,
+                        "Expected type parameter name",
+                    ));
+                }
+            } else {
+                return Err(DrafError::parse_error(
+                    param_location.line,
+                    param_location.column,
+                    "Expected type parameter name",
+                ));
+            };
+
+            // Parse extends constraint if present
+            let constraint = if self.check(&TokenKind::Identifier)
+                && self.current_token.as_ref().unwrap().lexeme == "extends"
+            {
+                self.advance(); // consume 'extends'
+                Some(self.parse_type_annotation()?)
+            } else {
+                None
+            };
+
+            // Parse default type if present
+            let default = if self.check(&TokenKind::Equal) {
+                self.advance(); // consume '='
+                Some(self.parse_type_annotation()?)
+            } else {
+                None
+            };
+
+            parameters.push(TypeParameter {
+                name: param_name,
+                constraint,
+                default,
+                location: param_location,
+            });
+
+            if self.check(&TokenKind::Comma) {
+                self.advance(); // consume ','
+            } else {
+                break;
+            }
+        }
+
+        self.consume(TokenKind::Greater, "Expected '>' after type parameters")?;
+        Ok(parameters)
     }
 
     /// Parse if statement with support for else and else if
@@ -826,15 +1114,36 @@ impl<'a> Parser<'a> {
 
                     self.consume(TokenKind::LeftParen, "Expected '(' after console method")?;
 
+                    // Skip newlines after opening parenthesis
+                    while self.check(&TokenKind::Newline) {
+                        self.advance();
+                    }
+
                     let mut arguments = Vec::new();
                     if !self.check(&TokenKind::RightParen) {
                         loop {
                             arguments.push(self.parse_expression()?);
+
+                            // Skip newlines after expression
+                            while self.check(&TokenKind::Newline) {
+                                self.advance();
+                            }
+
                             if !self.check(&TokenKind::Comma) {
                                 break;
                             }
                             self.advance(); // consume ','
+
+                            // Skip newlines after comma
+                            while self.check(&TokenKind::Newline) {
+                                self.advance();
+                            }
                         }
+                    }
+
+                    // Skip newlines before closing parenthesis
+                    while self.check(&TokenKind::Newline) {
+                        self.advance();
                     }
 
                     self.consume(
@@ -876,6 +1185,49 @@ impl<'a> Parser<'a> {
 
     /// Parse type annotation
     fn parse_type_annotation(&mut self) -> DrafResult<TypeAnnotation> {
+        self.parse_union_type()
+    }
+
+    /// Parse union type (A | B | C)
+    fn parse_union_type(&mut self) -> DrafResult<TypeAnnotation> {
+        let mut types = vec![self.parse_intersection_type()?];
+
+        while self.check(&TokenKind::Pipe) {
+            self.advance(); // consume '|'
+            types.push(self.parse_intersection_type()?);
+        }
+
+        if types.len() == 1 {
+            Ok(types.into_iter().next().unwrap())
+        } else {
+            Ok(TypeAnnotation::Union {
+                types,
+                location: self.current_location(),
+            })
+        }
+    }
+
+    /// Parse intersection type (A & B & C)
+    fn parse_intersection_type(&mut self) -> DrafResult<TypeAnnotation> {
+        let mut types = vec![self.parse_primary_type()?];
+
+        while self.check(&TokenKind::AndAnd) {
+            self.advance(); // consume '&'
+            types.push(self.parse_primary_type()?);
+        }
+
+        if types.len() == 1 {
+            Ok(types.into_iter().next().unwrap())
+        } else {
+            Ok(TypeAnnotation::Intersection {
+                types,
+                location: self.current_location(),
+            })
+        }
+    }
+
+    /// Parse primary type (primitives, identifiers, arrays, etc.)
+    fn parse_primary_type(&mut self) -> DrafResult<TypeAnnotation> {
         if let Some(token) = self.current_token {
             let location = self.current_location();
 
@@ -915,7 +1267,92 @@ impl<'a> Parser<'a> {
                 TokenKind::Identifier => {
                     let name = token.lexeme.clone();
                     self.advance();
-                    Ok(TypeAnnotation::Named { name, location })
+
+                    // Check for generic type arguments
+                    if self.check(&TokenKind::Less) {
+                        self.advance(); // consume '<'
+
+                        // Skip newlines after opening bracket
+                        while self.check(&TokenKind::Newline) {
+                            self.advance();
+                        }
+
+                        let mut type_arguments = Vec::new();
+
+                        while !self.check(&TokenKind::Greater) && !self.is_at_end() {
+                            type_arguments.push(self.parse_type_annotation()?);
+
+                            // Skip newlines after type argument
+                            while self.check(&TokenKind::Newline) {
+                                self.advance();
+                            }
+
+                            if self.check(&TokenKind::Comma) {
+                                self.advance(); // consume ','
+
+                                // Skip newlines after comma
+                                while self.check(&TokenKind::Newline) {
+                                    self.advance();
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+
+                        // Skip newlines before closing bracket
+                        while self.check(&TokenKind::Newline) {
+                            self.advance();
+                        }
+
+                        self.consume(TokenKind::Greater, "Expected '>' after type arguments")?;
+
+                        Ok(TypeAnnotation::Generic {
+                            name,
+                            type_arguments,
+                            location,
+                        })
+                    } else {
+                        Ok(TypeAnnotation::Named { name, location })
+                    }
+                }
+                TokenKind::LeftBrace => {
+                    // Object type { field: Type }
+                    self.parse_object_type()
+                }
+                TokenKind::LeftParen => {
+                    // Function type (param: Type) => ReturnType
+                    self.parse_function_type()
+                }
+                TokenKind::LeftBracket => {
+                    // Tuple type [Type1, Type2]
+                    self.parse_tuple_type()
+                }
+                TokenKind::StringLiteralDouble | TokenKind::StringLiteralSingle => {
+                    // String literal type "value"
+                    let value = token.lexeme.clone();
+                    self.advance();
+                    Ok(TypeAnnotation::Named {
+                        name: value,
+                        location,
+                    })
+                }
+                TokenKind::NumberLiteral => {
+                    // Number literal type 42
+                    let value = token.lexeme.clone();
+                    self.advance();
+                    Ok(TypeAnnotation::Named {
+                        name: value,
+                        location,
+                    })
+                }
+                TokenKind::True | TokenKind::False => {
+                    // Boolean literal type true | false
+                    let value = token.lexeme.clone();
+                    self.advance();
+                    Ok(TypeAnnotation::Named {
+                        name: value,
+                        location,
+                    })
                 }
                 _ => Err(DrafError::parse_error(
                     token.line,
@@ -930,6 +1367,132 @@ impl<'a> Parser<'a> {
                 "Expected type, found end of file",
             ))
         }
+    }
+
+    /// Parse object type { field: Type, ... }
+    fn parse_object_type(&mut self) -> DrafResult<TypeAnnotation> {
+        let location = self.current_location();
+        self.advance(); // consume '{'
+
+        let mut fields = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            // Skip newlines
+            if self.check(&TokenKind::Newline) {
+                self.advance();
+                continue;
+            }
+
+            let field_location = self.current_location();
+            let readonly = if self.check(&TokenKind::Identifier)
+                && self.current_token.as_ref().unwrap().lexeme == "readonly"
+            {
+                self.advance(); // consume 'readonly'
+                true
+            } else {
+                false
+            };
+
+            // Parse field name
+            let field_name = if let Some(token) = self.current_token {
+                if matches!(token.kind, TokenKind::Identifier) {
+                    let name = token.lexeme.clone();
+                    self.advance();
+                    name
+                } else {
+                    return Err(DrafError::parse_error(
+                        token.line,
+                        token.column,
+                        "Expected field name",
+                    ));
+                }
+            } else {
+                return Err(DrafError::parse_error(
+                    field_location.line,
+                    field_location.column,
+                    "Expected field name",
+                ));
+            };
+
+            let optional = if self.check(&TokenKind::Question) {
+                self.advance(); // consume '?'
+                true
+            } else {
+                false
+            };
+
+            self.consume(TokenKind::Colon, "Expected ':' after field name")?;
+            let field_type = self.parse_type_annotation()?;
+
+            fields.push(TypeAnnotationField {
+                name: field_name,
+                field_type,
+                optional,
+                readonly,
+                location: field_location,
+            });
+
+            if self.check(&TokenKind::Comma) || self.check(&TokenKind::Semicolon) {
+                self.advance(); // consume ',' or ';'
+            } else {
+                break;
+            }
+        }
+
+        self.consume(TokenKind::RightBrace, "Expected '}' after object type")?;
+
+        Ok(TypeAnnotation::Object { fields, location })
+    }
+
+    /// Parse function type (param: Type) => ReturnType
+    fn parse_function_type(&mut self) -> DrafResult<TypeAnnotation> {
+        let location = self.current_location();
+        self.advance(); // consume '('
+
+        let mut parameters = Vec::new();
+
+        while !self.check(&TokenKind::RightParen) && !self.is_at_end() {
+            parameters.push(self.parse_type_annotation()?);
+            if self.check(&TokenKind::Comma) {
+                self.advance(); // consume ','
+            } else {
+                break;
+            }
+        }
+
+        self.consume(
+            TokenKind::RightParen,
+            "Expected ')' after function parameters",
+        )?;
+        self.consume(TokenKind::Arrow, "Expected '=>' after function parameters")?;
+        let return_type = Box::new(self.parse_type_annotation()?);
+
+        Ok(TypeAnnotation::Function {
+            parameters,
+            return_type,
+            location,
+        })
+    }
+
+    /// Parse tuple type [Type1, Type2, ...]
+    fn parse_tuple_type(&mut self) -> DrafResult<TypeAnnotation> {
+        let location = self.current_location();
+        self.advance(); // consume '['
+
+        let mut elements = Vec::new();
+
+        while !self.check(&TokenKind::RightBracket) && !self.is_at_end() {
+            elements.push(self.parse_type_annotation()?);
+            if self.check(&TokenKind::Comma) {
+                self.advance(); // consume ','
+            } else {
+                break;
+            }
+        }
+
+        self.consume(TokenKind::RightBracket, "Expected ']' after tuple elements")?;
+
+        Ok(TypeAnnotation::Tuple { elements, location })
     }
 
     /// Parse template literal with interpolation
