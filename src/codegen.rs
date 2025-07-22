@@ -470,9 +470,11 @@ impl<'ctx> CodeGenerator<'ctx> {
 
             TypedStatement::FunctionDeclaration {
                 name,
+                #[allow(unused)]
                 kind,
                 parameters,
                 return_type,
+                #[allow(unused)]
                 body,
                 location: _,
             } => {
@@ -481,6 +483,7 @@ impl<'ctx> CodeGenerator<'ctx> {
 
                 // Create LLVM function type
                 let mut param_types = Vec::new();
+                #[allow(unused)]
                 for param in &parameters {
                     // For now, all parameters are f64 (numbers)
                     // TODO: Use actual parameter types
