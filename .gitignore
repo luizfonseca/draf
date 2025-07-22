@@ -9,3 +9,4 @@ target
 gc
 /*_test
 /variable_*
+/const_*

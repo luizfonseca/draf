@@ -4,7 +4,7 @@
 //! including the distinct handling of any, null, and undefined types.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// The core type representation in Draf's type system
@@ -352,6 +352,8 @@ pub struct TypeContext {
     aliases: HashMap<String, Type>,
     /// Generic type parameters
     generics: HashMap<String, Type>,
+    /// Const variable tracking
+    const_variables: HashSet<String>,
 }
 
 impl TypeContext {
@@ -362,12 +364,24 @@ impl TypeContext {
             functions: HashMap::new(),
             aliases: HashMap::new(),
             generics: HashMap::new(),
+            const_variables: HashSet::new(),
         }
     }
 
     /// Add a variable binding
     pub fn add_variable(&mut self, name: String, ty: Type) {
         self.variables.insert(name, ty);
+    }
+
+    /// Add a variable binding and mark it as const
+    pub fn add_const_variable(&mut self, name: String, ty: Type) {
+        self.variables.insert(name.clone(), ty);
+        self.const_variables.insert(name);
+    }
+
+    /// Check if a variable is const
+    pub fn is_const_variable(&self, name: &str) -> bool {
+        self.const_variables.contains(name)
     }
 
     /// Get a variable's type

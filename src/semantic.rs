@@ -125,7 +125,12 @@ impl SemanticAnalyzer {
                 }
 
                 // Add to symbol table
-                self.context.add_variable(name.clone(), final_type.clone());
+                if kind == VariableKind::Const {
+                    self.context
+                        .add_const_variable(name.clone(), final_type.clone());
+                } else {
+                    self.context.add_variable(name.clone(), final_type.clone());
+                }
 
                 Ok(TypedStatement::VariableDeclaration {
                     name,
@@ -291,6 +296,17 @@ impl SemanticAnalyzer {
                 value,
                 location,
             } => {
+                // Check if trying to assign to a const variable before moving target
+                if let Expression::Identifier { name, .. } = target.as_ref() {
+                    if self.context.is_const_variable(name) {
+                        return Err(DrafError::semantic_error(
+                            location.line,
+                            location.column,
+                            format!("Cannot assign to const variable '{}'", name),
+                        ));
+                    }
+                }
+
                 let typed_target = self.analyze_expression(*target)?;
                 let typed_value = self.analyze_expression(*value)?;
 
