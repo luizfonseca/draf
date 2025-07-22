@@ -7,6 +7,8 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Instant;
 
 /// ANSI color codes for terminal output
@@ -18,7 +20,7 @@ const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
 /// Test result status
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum TestResult {
     Success,
     CompilationError(String),
@@ -26,6 +28,7 @@ enum TestResult {
 }
 
 /// Individual test case information
+#[derive(Clone)]
 struct TestCase {
     name: String,
     path: String,
@@ -49,6 +52,7 @@ struct TestRunner {
     project_root: String,
     verbose: bool,
     stop_on_first_failure: bool,
+    benchmark: bool,
 }
 
 impl TestRunner {
@@ -57,6 +61,8 @@ impl TestRunner {
         let verbose = args.contains(&"--verbose".to_string()) || args.contains(&"-v".to_string());
         let stop_on_first_failure =
             args.contains(&"--fail-fast".to_string()) || args.contains(&"-f".to_string());
+        let benchmark =
+            args.contains(&"--benchmark".to_string()) || args.contains(&"-b".to_string());
 
         Self {
             project_root: env::current_dir()
@@ -65,6 +71,7 @@ impl TestRunner {
                 .to_string(),
             verbose,
             stop_on_first_failure,
+            benchmark,
         }
     }
 
@@ -196,7 +203,15 @@ impl TestRunner {
             println!("{}Failed: {}{}", RED, failed_tests, RESET);
         }
 
-        println!("Total time: {}ms", total_duration);
+        let execution_mode = if self.stop_on_first_failure {
+            "sequential"
+        } else {
+            "parallel"
+        };
+        println!(
+            "Total time: {}ms ({} execution)",
+            total_duration, execution_mode
+        );
 
         if failed_tests > 0 {
             println!("\n{}Failed Tests:{}", RED, RESET);
@@ -262,6 +277,9 @@ impl TestRunner {
                 "OFF"
             }
         );
+        if self.benchmark {
+            println!("Benchmark mode: ON");
+        }
         println!();
 
         let mut test_cases = self.discover_tests();
@@ -275,40 +293,61 @@ impl TestRunner {
         }
 
         println!("Found {} test files", test_cases.len());
-        println!("{}Running tests...{}", BLUE, RESET);
+        if self.stop_on_first_failure {
+            println!(
+                "{}Running tests sequentially (fail-fast mode)...{}",
+                BLUE, RESET
+            );
+        } else {
+            println!("{}Running tests in parallel...{}", BLUE, RESET);
+        }
         println!();
 
         let total_tests = test_cases.len();
-        let mut progress = 0;
-        for test_case in &mut test_cases {
-            progress += 1;
 
-            if !self.verbose {
-                print!("({}/{}) {} ... ", progress, total_tests, test_case.name);
-            }
+        // Run benchmark if requested
+        if self.benchmark {
+            self.run_benchmark(&mut test_cases);
+            return;
+        }
 
-            self.run_test(test_case);
+        // Run tests in parallel or sequential based on configuration
+        if self.stop_on_first_failure {
+            // Sequential execution for fail-fast mode
+            let mut progress = 0;
+            for test_case in &mut test_cases {
+                progress += 1;
 
-            if !self.verbose {
-                match &test_case.result {
-                    TestResult::Success => {
-                        println!("{}OK{} ({}ms)", GREEN, RESET, test_case.duration_ms)
+                if !self.verbose {
+                    print!("({}/{}) {} ... ", progress, total_tests, test_case.name);
+                }
+
+                self.run_test(test_case);
+
+                if !self.verbose {
+                    match &test_case.result {
+                        TestResult::Success => {
+                            println!("{}OK{} ({}ms)", GREEN, RESET, test_case.duration_ms)
+                        }
+                        TestResult::CompilationError(_) => {
+                            println!("{}FAIL{} ({}ms)", RED, RESET, test_case.duration_ms)
+                        }
+                        TestResult::NotFound => println!("{}SKIP{}", YELLOW, RESET),
                     }
-                    TestResult::CompilationError(_) => {
-                        println!("{}FAIL{} ({}ms)", RED, RESET, test_case.duration_ms)
-                    }
-                    TestResult::NotFound => println!("{}SKIP{}", YELLOW, RESET),
+                }
+
+                // Stop on first failure if requested
+                if test_case.result != TestResult::Success {
+                    println!(
+                        "\n{}Stopping on first failure (--fail-fast mode){}",
+                        YELLOW, RESET
+                    );
+                    break;
                 }
             }
-
-            // Stop on first failure if requested
-            if self.stop_on_first_failure && test_case.result != TestResult::Success {
-                println!(
-                    "\n{}Stopping on first failure (--fail-fast mode){}",
-                    YELLOW, RESET
-                );
-                break;
-            }
+        } else {
+            // Parallel execution
+            self.run_tests_parallel(&mut test_cases);
         }
 
         self.print_summary(&test_cases);
@@ -324,6 +363,181 @@ impl TestRunner {
         }
     }
 
+    /// Run tests in parallel using a thread pool
+    fn run_tests_parallel(&self, test_cases: &mut [TestCase]) {
+        // Limit concurrency to avoid overwhelming the system
+        let num_threads = std::cmp::min(
+            std::cmp::max(1, num_cpus::get() / 2), // Use half the available cores
+            std::cmp::min(8, test_cases.len()),    // Cap at 8 threads max
+        );
+
+        println!(
+            "{}Using {} threads for parallel execution{}",
+            BLUE, num_threads, RESET
+        );
+
+        // Create work queue and results storage
+        let work_queue: Arc<Mutex<Vec<usize>>> =
+            Arc::new(Mutex::new((0..test_cases.len()).collect()));
+        let results: Arc<Mutex<Vec<Option<(TestResult, u64)>>>> =
+            Arc::new(Mutex::new(vec![None; test_cases.len()]));
+        let progress_counter = Arc::new(Mutex::new(0));
+        let total_tests = test_cases.len();
+
+        let mut handles = vec![];
+
+        for _thread_id in 0..num_threads {
+            let work_queue = Arc::clone(&work_queue);
+            let results = Arc::clone(&results);
+            let progress_counter = Arc::clone(&progress_counter);
+            let project_root = self.project_root.clone();
+            let verbose = self.verbose;
+
+            // Clone test case data for this thread
+            let test_data: Vec<(String, String)> = test_cases
+                .iter()
+                .map(|tc| (tc.name.clone(), tc.path.clone()))
+                .collect();
+
+            let handle = thread::spawn(move || {
+                loop {
+                    // Get next test index from work queue
+                    let test_index = {
+                        let mut queue = work_queue.lock().unwrap();
+                        if queue.is_empty() {
+                            break;
+                        }
+                        queue.pop().unwrap()
+                    };
+
+                    let (test_name, test_path) = &test_data[test_index];
+                    let mut test_case = TestCase::new(test_name.clone(), test_path.clone());
+
+                    // Create a local test runner for this thread
+                    let runner = TestRunner {
+                        project_root: project_root.clone(),
+                        verbose: false, // Disable verbose for parallel to avoid output conflicts
+                        stop_on_first_failure: false,
+                        benchmark: false,
+                    };
+
+                    // Run the test
+                    runner.run_test(&mut test_case);
+
+                    // Update progress and print result (with thread-safe printing)
+                    let current_progress = {
+                        let mut progress = progress_counter.lock().unwrap();
+                        *progress += 1;
+                        *progress
+                    };
+
+                    if !verbose {
+                        // Use a single print statement to avoid interleaving
+                        let status_msg = match &test_case.result {
+                            TestResult::Success => {
+                                format!("{}OK{} ({}ms)", GREEN, RESET, test_case.duration_ms)
+                            }
+                            TestResult::CompilationError(_) => {
+                                format!("{}FAIL{} ({}ms)", RED, RESET, test_case.duration_ms)
+                            }
+                            TestResult::NotFound => format!("{}SKIP{}", YELLOW, RESET),
+                        };
+                        println!(
+                            "({}/{}) {} ... {}",
+                            current_progress, total_tests, test_case.name, status_msg
+                        );
+                    }
+
+                    // Store result
+                    {
+                        let mut result_vec = results.lock().unwrap();
+                        result_vec[test_index] =
+                            Some((test_case.result.clone(), test_case.duration_ms));
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+
+        // Copy results back to original test_cases
+        let final_results = results.lock().unwrap();
+        for (i, result_option) in final_results.iter().enumerate() {
+            if let Some((result, duration)) = result_option {
+                if i < test_cases.len() {
+                    test_cases[i].result = result.clone();
+                    test_cases[i].duration_ms = *duration;
+                }
+            }
+        }
+    }
+
+    /// Run performance benchmark comparing sequential vs parallel execution
+    fn run_benchmark(&self, test_cases: &mut [TestCase]) {
+        println!("{}=== Performance Benchmark ==={}", BOLD, RESET);
+        println!("Comparing sequential vs parallel test execution\n");
+
+        // Run sequential benchmark
+        println!("{}Running sequential benchmark...{}", BLUE, RESET);
+        let start_time = Instant::now();
+        let mut sequential_cases = test_cases.to_vec();
+        let mut progress = 0;
+        for test_case in &mut sequential_cases {
+            progress += 1;
+            print!(
+                "({}/{}) {} ... ",
+                progress,
+                test_cases.len(),
+                test_case.name
+            );
+            self.run_test(test_case);
+            match &test_case.result {
+                TestResult::Success => {
+                    println!("{}OK{} ({}ms)", GREEN, RESET, test_case.duration_ms)
+                }
+                TestResult::CompilationError(_) => {
+                    println!("{}FAIL{} ({}ms)", RED, RESET, test_case.duration_ms)
+                }
+                TestResult::NotFound => println!("{}SKIP{}", YELLOW, RESET),
+            }
+        }
+        let sequential_time = start_time.elapsed();
+
+        println!("\n{}Running parallel benchmark...{}", BLUE, RESET);
+        let start_time = Instant::now();
+        self.run_tests_parallel(test_cases);
+        let parallel_time = start_time.elapsed();
+
+        // Print benchmark results
+        println!("\n{}=== Benchmark Results ==={}", BOLD, RESET);
+        println!("Sequential execution: {}ms", sequential_time.as_millis());
+        println!("Parallel execution:   {}ms", parallel_time.as_millis());
+
+        let speedup = sequential_time.as_millis() as f64 / parallel_time.as_millis() as f64;
+        println!("Speedup factor: {:.2}x", speedup);
+
+        if speedup > 1.0 {
+            println!(
+                "{}Parallel execution is {:.1}% faster{}",
+                GREEN,
+                (speedup - 1.0) * 100.0,
+                RESET
+            );
+        } else {
+            println!(
+                "{}Sequential execution is {:.1}% faster{}",
+                YELLOW,
+                (1.0 / speedup - 1.0) * 100.0,
+                RESET
+            );
+        }
+    }
+
     /// Print help message
     fn print_help() {
         println!("{}Draf TypeScript Compiler Test Runner{}", BOLD, RESET);
@@ -332,13 +546,20 @@ impl TestRunner {
         println!();
         println!("Options:");
         println!("  -v, --verbose       Show detailed output for each test");
-        println!("  -f, --fail-fast     Stop on the first test failure");
+        println!(
+            "  -f, --fail-fast     Stop on the first test failure (disables parallel execution)"
+        );
+        println!("  -b, --benchmark     Run performance benchmark (sequential vs parallel)");
         println!("  -h, --help          Show this help message");
+        println!();
+        println!("Note: Tests run in parallel by default for better performance.");
+        println!("Use --fail-fast to run sequentially and stop on first failure.");
         println!();
         println!("Examples:");
         println!("  cargo run --bin test_runner");
         println!("  cargo run --bin test_runner --verbose");
         println!("  cargo run --bin test_runner --fail-fast");
+        println!("  cargo run --bin test_runner --benchmark");
         println!("  cargo run --bin test_runner -v -f");
     }
 }
