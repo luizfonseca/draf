@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// String interning system for memory efficiency
 lazy_static! {
+    /// String interning system for memory efficiency
     static ref STRING_INTERNER: Mutex<StringInterner> = Mutex::new(StringInterner::new());
 }
 
@@ -52,6 +52,10 @@ impl StringInterner {
     /// Get the total number of interned strings
     pub fn len(&self) -> usize {
         self.strings.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.strings.is_empty()
     }
 }
 

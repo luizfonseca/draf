@@ -391,8 +391,6 @@ pub struct TypeContext {
     functions: HashMap<String, Type>,
     /// Type aliases
     aliases: HashMap<String, Type>,
-    /// Generic type parameters
-    generics: HashMap<String, Type>,
     /// Const variable tracking
     const_variables: HashSet<String>,
 }
@@ -404,7 +402,6 @@ impl TypeContext {
             variables: HashMap::new(),
             functions: HashMap::new(),
             aliases: HashMap::new(),
-            generics: HashMap::new(),
             const_variables: HashSet::new(),
         }
     }

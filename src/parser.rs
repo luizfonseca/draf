@@ -31,11 +31,6 @@ impl<'a> Parser<'a> {
         self.current_token = self.tokens.next();
     }
 
-    /// Peek at the next token without consuming it
-    fn peek(&mut self) -> Option<&Token> {
-        self.tokens.peek().copied()
-    }
-
     /// Check if current token matches expected kind
     fn check(&self, kind: &TokenKind) -> bool {
         match self.current_token {
@@ -1046,9 +1041,7 @@ impl<'a> Parser<'a> {
 
     /// Consume optional semicolon or newline for ASI (Automatic Semicolon Insertion)
     fn consume_optional_semicolon(&mut self) {
-        if self.check(&TokenKind::Semicolon) {
-            self.advance();
-        } else if self.check(&TokenKind::Newline) {
+        if self.check(&TokenKind::Semicolon) || self.check(&TokenKind::Newline) {
             self.advance();
         }
     }

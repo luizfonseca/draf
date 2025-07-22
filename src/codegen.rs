@@ -14,9 +14,7 @@ use inkwell::context::Context;
 use inkwell::basic_block::BasicBlock;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
-};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use std::collections::HashMap;
 use std::path::Path;
@@ -75,7 +73,7 @@ impl<'ctx> CodeGenerator<'ctx> {
 
     /// Declare the printf function for console output
     fn declare_printf(&mut self) {
-        let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let i8_ptr_type = self.context.ptr_type(AddressSpace::default());
         let printf_type = self.context.i32_type().fn_type(&[i8_ptr_type.into()], true);
         let printf_fn = self.module.add_function("printf", printf_type, None);
         self.printf_function = Some(printf_fn);
@@ -416,13 +414,11 @@ impl<'ctx> CodeGenerator<'ctx> {
                 }
                 LiteralValue::Null => Ok(self
                     .context
-                    .i8_type()
                     .ptr_type(AddressSpace::default())
                     .const_null()
                     .into()),
                 LiteralValue::Undefined => Ok(self
                     .context
-                    .i8_type()
                     .ptr_type(AddressSpace::default())
                     .const_null()
                     .into()),
@@ -780,24 +776,14 @@ impl<'ctx> CodeGenerator<'ctx> {
     fn type_to_llvm_type(&self, ty: &Type) -> DrafResult<BasicTypeEnum<'ctx>> {
         match ty {
             Type::Number => Ok(self.context.f64_type().into()),
-            Type::String => Ok(self
-                .context
-                .i8_type()
-                .ptr_type(AddressSpace::default())
-                .into()),
+            Type::String => Ok(self.context.ptr_type(AddressSpace::default()).into()),
             Type::Boolean => Ok(self.context.bool_type().into()),
-            Type::Null | Type::Undefined => Ok(self
-                .context
-                .i8_type()
-                .ptr_type(AddressSpace::default())
-                .into()),
+            Type::Null | Type::Undefined => {
+                Ok(self.context.ptr_type(AddressSpace::default()).into())
+            }
             Type::Any => {
                 // For now, represent Any as a pointer (will need proper tagged union later)
-                Ok(self
-                    .context
-                    .i8_type()
-                    .ptr_type(AddressSpace::default())
-                    .into())
+                Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
             Type::Void => Err(DrafError::codegen_error(
                 "Void type cannot be used as value type",
@@ -893,7 +879,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                             .builder
                             .build_pointer_cast(
                                 true_global.as_pointer_value(),
-                                self.context.i8_type().ptr_type(AddressSpace::default()),
+                                self.context.ptr_type(AddressSpace::default()),
                                 "true_ptr",
                             )
                             .unwrap();
@@ -902,7 +888,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                             .builder
                             .build_pointer_cast(
                                 false_global.as_pointer_value(),
-                                self.context.i8_type().ptr_type(AddressSpace::default()),
+                                self.context.ptr_type(AddressSpace::default()),
                                 "false_ptr",
                             )
                             .unwrap();
@@ -924,7 +910,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         self.builder
                             .build_pointer_cast(
                                 false_global.as_pointer_value(),
-                                self.context.i8_type().ptr_type(AddressSpace::default()),
+                                self.context.ptr_type(AddressSpace::default()),
                                 "false_ptr_fallback",
                             )
                             .unwrap()
@@ -961,7 +947,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             .builder
             .build_pointer_cast(
                 global_fmt.as_pointer_value(),
-                self.context.i8_type().ptr_type(AddressSpace::default()),
+                self.context.ptr_type(AddressSpace::default()),
                 "fmt_ptr",
             )
             .unwrap();
@@ -1014,10 +1000,11 @@ impl<'ctx> CodeGenerator<'ctx> {
                     _ => Ok(Type::Number),
                 }
             }
-            Expression::Unary { operator, .. } => match operator {
-                UnaryOperator::LogicalNot => Ok(Type::Boolean),
-                _ => Ok(Type::Number),
-            },
+            Expression::Unary {
+                operator: UnaryOperator::LogicalNot,
+                ..
+            } => Ok(Type::Boolean),
+            Expression::Unary { .. } => Ok(Type::Number),
             Expression::Conditional { then_expr, .. } => {
                 // For simplicity, use the type of the then branch
                 self.infer_expression_type(then_expr)
@@ -1185,7 +1172,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .builder
                     .build_pointer_cast(
                         buffer,
-                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        self.context.ptr_type(AddressSpace::default()),
                         "str_buffer",
                     )
                     .unwrap();
@@ -1264,7 +1251,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
 
         // Create string concatenation function signature
-        let str_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let str_type = self.context.ptr_type(AddressSpace::default());
         let fn_type = str_type.fn_type(&[str_type.into(), str_type.into()], false);
         let function = self.module.add_function("str_concat", fn_type, None);
 
@@ -1286,7 +1273,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             return function;
         }
 
-        let str_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let str_type = self.context.ptr_type(AddressSpace::default());
         let i32_type = self.context.i32_type();
         let fn_type = i32_type.fn_type(&[str_type.into(), str_type.into()], true);
         self.module.add_function("sprintf", fn_type, None)
@@ -1298,7 +1285,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             return function;
         }
 
-        let ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
         let size_type = self.context.i64_type();
         let fn_type = ptr_type.fn_type(&[size_type.into()], false);
         self.module.add_function("malloc", fn_type, None)
@@ -1310,7 +1297,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             return function;
         }
 
-        let str_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let str_type = self.context.ptr_type(AddressSpace::default());
         let i32_type = self.context.i32_type();
         let fn_type = i32_type.fn_type(&[str_type.into(), str_type.into()], false);
         self.module.add_function("strcmp", fn_type, None)
