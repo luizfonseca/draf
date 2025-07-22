@@ -26,11 +26,11 @@ isReady = false;
 
 // Expressions
 let complexExpression = (x + 5) * 2 - 10;
-let booleanExpression = x > 50 && name == "Updated name";
+// let booleanExpression = x > 50 && name == "Updated name";
 
 // Null and undefined (explicit in strongly typed mode)
 let nullValue: null = null;
 let undefinedValue: undefined = undefined;
 
 // Any type (requires explicit handling)
-let anyValue: any = 42;
+let anyValue: number = 42;
