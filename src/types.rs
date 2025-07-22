@@ -97,6 +97,16 @@ impl Type {
             // Any can be assigned to anything (but requires explicit handling)
             (Type::Any, _) => true,
 
+            // Union types can be assigned if all their members can be assigned
+            (Type::Union(from_types), to_type) => {
+                from_types.iter().all(|t| t.is_assignable_to(to_type))
+            }
+
+            // A type can be assigned to a union if it matches any member
+            (from_type, Type::Union(to_types)) => {
+                to_types.iter().any(|t| from_type.is_assignable_to(t))
+            }
+
             // Nothing can be assigned to Never
             (_, Type::Never) => false,
 
@@ -105,10 +115,6 @@ impl Type {
             (_, Type::Void) => false,
 
             // Union type assignability
-            (_, Type::Union(target_types)) => target_types.iter().any(|t| self.is_assignable_to(t)),
-            (Type::Union(source_types), _) => {
-                source_types.iter().all(|t| t.is_assignable_to(other))
-            }
 
             // Array assignability (covariant)
             (Type::Array(source_elem), Type::Array(target_elem)) => {
@@ -227,8 +233,18 @@ impl Type {
             },
             BinaryOp::NullishCoalescing => {
                 // Nullish coalescing returns the right operand if left is null/undefined
-                // For now, we'll return the type of the right operand
-                Some(other.clone())
+                // Otherwise returns the left operand
+                // The result type should be a union of left and right types
+                match (self, other) {
+                    // If left is null/undefined, result is right type
+                    (Type::Null, _) | (Type::Undefined, _) => Some(other.clone()),
+                    // If right is null/undefined, result is left type
+                    (_, Type::Null) | (_, Type::Undefined) => Some(self.clone()),
+                    // If both are the same type, return that type
+                    _ if self == other => Some(self.clone()),
+                    // Otherwise, create a union type
+                    _ => Some(Type::Union(vec![self.clone(), other.clone()])),
+                }
             }
         }
     }
