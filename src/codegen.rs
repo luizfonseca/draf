@@ -13,9 +13,8 @@ use inkwell::context::Context;
 
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
-use inkwell::types::{BasicMetadataTypeEnum, FunctionType};
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue,
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue,
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use std::collections::HashMap;
