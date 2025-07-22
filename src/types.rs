@@ -191,6 +191,9 @@ impl Type {
                 (Type::Null, Type::String) => Some(Type::String),
                 (Type::String, Type::Undefined) => Some(Type::String),
                 (Type::Undefined, Type::String) => Some(Type::String),
+                // Number + Boolean = String (implicit string coercion)
+                (Type::Number, Type::Boolean) => Some(Type::String),
+                (Type::Boolean, Type::Number) => Some(Type::String),
                 _ => None,
             },
             BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => match (self, other) {

@@ -14,7 +14,9 @@ use inkwell::context::Context;
 use inkwell::basic_block::BasicBlock;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+};
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use std::collections::HashMap;
 use std::path::Path;
@@ -467,7 +469,9 @@ impl<'ctx> CodeGenerator<'ctx> {
 
                 // Handle string concatenation and coercion
                 if operator == BinaryOperator::Add
-                    && (left_type == Type::String || right_type == Type::String)
+                    && (left_type == Type::String
+                        || right_type == Type::String
+                        || expr.type_info == Type::String)
                 {
                     return self.generate_string_concatenation(
                         left_val,

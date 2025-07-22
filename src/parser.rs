@@ -978,23 +978,8 @@ impl<'a> Parser<'a> {
                 }
 
                 if let Some(expr_str) = template_parts.expressions.get(i) {
-                    // Parse the expression string into an AST node
-                    // For now, we'll create a simple identifier or literal
-                    // In a full implementation, we'd recursively parse the expression
-                    let expr = if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                        // Simple identifier
-                        AstExpression::Identifier {
-                            name: expr_str.clone(),
-                            location: location.clone(),
-                        }
-                    } else {
-                        // For complex expressions, we'll create a placeholder for now
-                        // This would need recursive parsing in a full implementation
-                        AstExpression::Identifier {
-                            name: expr_str.clone(),
-                            location: location.clone(),
-                        }
-                    };
+                    // Parse the expression string into an AST node by tokenizing and parsing it
+                    let expr = self.parse_template_expression(expr_str, &location)?;
                     elements.push(TemplateElement::expression(expr));
                 }
             }
@@ -1010,6 +995,36 @@ impl<'a> Parser<'a> {
                 location,
             })
         }
+    }
+
+    /// Parse an expression inside a template literal interpolation
+    fn parse_template_expression(
+        &mut self,
+        expr_str: &str,
+        location: &SourceLocation,
+    ) -> DrafResult<Expression> {
+        use crate::lexer::tokenize;
+
+        // Tokenize the expression string
+        let tokens = tokenize(expr_str).map_err(|_| {
+            DrafError::parse_error(
+                location.line,
+                location.column,
+                format!("Failed to tokenize template expression: {}", expr_str),
+            )
+        })?;
+
+        // Create a new parser for this expression
+        let mut expr_parser = Parser::new(&tokens);
+
+        // Parse the expression
+        expr_parser.parse_expression().map_err(|_| {
+            DrafError::parse_error(
+                location.line,
+                location.column,
+                format!("Failed to parse template expression: {}", expr_str),
+            )
+        })
     }
 
     /// Get current source location
