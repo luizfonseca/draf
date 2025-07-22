@@ -3,8 +3,8 @@
 //! This module provides functionality for parsing, validating, and working with
 //! TypeScript interface declarations including inheritance and generic parameters.
 
-use crate::ast::{SourceLocation, TypeAnnotation};
-use crate::typing::{Interface, InterfaceField, InterfaceMethod, MethodParameter, TypeParameter};
+use crate::ast::SourceLocation;
+use crate::typing::{Interface, InterfaceField, InterfaceMethod, TypeParameter};
 use crate::DrafError;
 use std::collections::HashMap;
 

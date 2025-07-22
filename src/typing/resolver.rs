@@ -3,7 +3,7 @@
 //! This module provides functionality for resolving type annotations to concrete types,
 //! handling generic type instantiation, and validating type compatibility.
 
-use crate::ast::{SourceLocation, TypeAnnotation, TypeAnnotationField};
+use crate::ast::{SourceLocation, TypeAnnotation};
 use crate::types::Type;
 use crate::typing::{Interface, TypeAlias, TypeContext, TypeParameter};
 use crate::DrafError;
