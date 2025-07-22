@@ -476,7 +476,7 @@ impl SemanticAnalyzer {
         match type_annotation {
             TypeAnnotation::Named { name, .. } => {
                 // Check if it's an interface first
-                if let Some(interface) = self.typing_context.get_interface(name) {
+                if let Some(_interface) = self.typing_context.get_interface(name) {
                     let mut fields = HashMap::new();
                     // Collect all fields including inherited ones
                     if let Ok(all_fields) = self.typing_context.get_all_interface_fields(name) {
@@ -907,7 +907,7 @@ impl SemanticAnalyzer {
                             ))
                         }
                     }
-                    Type::Interface { name, .. } => {
+                    Type::Interface { .. } => {
                         // For now, assume interface properties exist
                         // TODO: Implement proper interface lookup from typing context
                         let result_type = if optional {

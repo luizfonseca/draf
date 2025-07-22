@@ -258,6 +258,7 @@ pub fn resolve_type(
 
 /// Type compatibility checker
 pub struct TypeCompatibilityChecker<'a> {
+    #[allow(dead_code)]
     context: &'a TypeContext,
 }
 
