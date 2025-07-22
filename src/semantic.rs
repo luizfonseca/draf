@@ -197,6 +197,94 @@ impl SemanticAnalyzer {
                 })
             }
 
+            Statement::While {
+                condition,
+                body,
+                location,
+            } => {
+                let typed_condition = self.analyze_expression(condition)?;
+
+                // Check that condition can be used in boolean context
+                if !typed_condition.type_info.can_be_boolean() {
+                    return Err(DrafError::type_error(
+                        location.line,
+                        location.column,
+                        format!(
+                            "While condition must be boolean, got {}",
+                            typed_condition.type_info
+                        ),
+                    ));
+                }
+
+                let typed_body = Box::new(self.analyze_statement(*body)?);
+
+                Ok(TypedStatement::While {
+                    condition: typed_condition,
+                    body: typed_body,
+                    location,
+                })
+            }
+
+            Statement::Break { location } => {
+                // TODO: Add loop context validation
+                Ok(TypedStatement::Break { location })
+            }
+
+            Statement::Continue { location } => {
+                // TODO: Add loop context validation
+                Ok(TypedStatement::Continue { location })
+            }
+
+            Statement::For {
+                init,
+                condition,
+                update,
+                body,
+                location,
+            } => {
+                // Analyze init statement (optional)
+                let typed_init = match init {
+                    Some(init_stmt) => Some(Box::new(self.analyze_statement(*init_stmt)?)),
+                    None => None,
+                };
+
+                // Analyze condition (optional)
+                let typed_condition = match condition {
+                    Some(cond_expr) => {
+                        let typed_cond = self.analyze_expression(cond_expr)?;
+                        // Check that condition can be used in boolean context
+                        if !typed_cond.type_info.can_be_boolean() {
+                            return Err(DrafError::type_error(
+                                location.line,
+                                location.column,
+                                format!(
+                                    "For condition must be boolean, got {}",
+                                    typed_cond.type_info
+                                ),
+                            ));
+                        }
+                        Some(typed_cond)
+                    }
+                    None => None,
+                };
+
+                // Analyze update expression (optional)
+                let typed_update = match update {
+                    Some(update_expr) => Some(self.analyze_expression(update_expr)?),
+                    None => None,
+                };
+
+                let typed_body = Box::new(self.analyze_statement(*body)?);
+
+                Ok(TypedStatement::For {
+                    init: typed_init,
+                    condition: typed_condition,
+                    update: typed_update,
+                    body: typed_body,
+                    location,
+                })
+            }
+
             // Placeholder implementations for other statement types
             _ => Err(DrafError::semantic_error(
                 statement.location().line,
@@ -542,6 +630,24 @@ pub enum TypedStatement {
     },
     Block {
         statements: Vec<TypedStatement>,
+        location: SourceLocation,
+    },
+    While {
+        condition: TypedExpression,
+        body: Box<TypedStatement>,
+        location: SourceLocation,
+    },
+    Break {
+        location: SourceLocation,
+    },
+    Continue {
+        location: SourceLocation,
+    },
+    For {
+        init: Option<Box<TypedStatement>>,
+        condition: Option<TypedExpression>,
+        update: Option<TypedExpression>,
+        body: Box<TypedStatement>,
         location: SourceLocation,
     },
     // Other statement types will be added as needed

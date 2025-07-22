@@ -102,6 +102,8 @@ impl<'a> Parser<'a> {
                 TokenKind::While => self.parse_while_statement(),
                 TokenKind::For => self.parse_for_statement(),
                 TokenKind::Return => self.parse_return_statement(),
+                TokenKind::Break => self.parse_break_statement(),
+                TokenKind::Continue => self.parse_continue_statement(),
                 TokenKind::LeftBrace => self.parse_block_statement(),
                 TokenKind::Semicolon => {
                     let location = self.current_location();
@@ -233,22 +235,77 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse while statement (placeholder)
+    /// Parse while statement: while (condition) { body }
     fn parse_while_statement(&mut self) -> DrafResult<Statement> {
-        Err(DrafError::parse_error(
-            self.current_token.unwrap().line,
-            self.current_token.unwrap().column,
-            "While statements not yet implemented",
-        ))
+        let location = self.current_location();
+        self.consume(TokenKind::While, "Expected 'while'")?;
+        self.consume(TokenKind::LeftParen, "Expected '(' after 'while'")?;
+
+        let condition = self.parse_expression()?;
+
+        self.consume(TokenKind::RightParen, "Expected ')' after while condition")?;
+
+        let body = Box::new(self.parse_statement()?);
+
+        Ok(Statement::While {
+            condition,
+            body,
+            location,
+        })
     }
 
-    /// Parse for statement (placeholder)
+    /// Parse for statement: for (init; condition; update) { body }
     fn parse_for_statement(&mut self) -> DrafResult<Statement> {
-        Err(DrafError::parse_error(
-            self.current_token.unwrap().line,
-            self.current_token.unwrap().column,
-            "For statements not yet implemented",
-        ))
+        let location = self.current_location();
+        self.consume(TokenKind::For, "Expected 'for'")?;
+        self.consume(TokenKind::LeftParen, "Expected '(' after 'for'")?;
+
+        // Parse init (optional)
+        let init = if self.check(&TokenKind::Semicolon) {
+            None
+        } else {
+            // Parse init statement without consuming semicolon
+            let init_stmt = match &self.current_token {
+                Some(token) => match &token.kind {
+                    TokenKind::Let | TokenKind::Const | TokenKind::Var => {
+                        self.parse_variable_declaration_no_semicolon()?
+                    }
+                    _ => self.parse_expression_statement_no_semicolon()?,
+                },
+                None => return Err(DrafError::parse_error(0, 0, "Unexpected end of input")),
+            };
+            Some(Box::new(init_stmt))
+        };
+        self.consume(TokenKind::Semicolon, "Expected ';' after for loop init")?;
+
+        // Parse condition (optional)
+        let condition = if self.check(&TokenKind::Semicolon) {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        self.consume(
+            TokenKind::Semicolon,
+            "Expected ';' after for loop condition",
+        )?;
+
+        // Parse update (optional)
+        let update = if self.check(&TokenKind::RightParen) {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        self.consume(TokenKind::RightParen, "Expected ')' after for loop header")?;
+
+        let body = Box::new(self.parse_statement()?);
+
+        Ok(Statement::For {
+            init,
+            condition,
+            update,
+            body,
+            location,
+        })
     }
 
     /// Parse return statement (placeholder)
@@ -258,6 +315,89 @@ impl<'a> Parser<'a> {
             self.current_token.unwrap().column,
             "Return statements not yet implemented",
         ))
+    }
+
+    /// Parse break statement
+    fn parse_break_statement(&mut self) -> DrafResult<Statement> {
+        let location = self.current_location();
+        self.consume(TokenKind::Break, "Expected 'break'")?;
+
+        // Optional semicolon
+        if self.check(&TokenKind::Semicolon) {
+            self.advance();
+        }
+
+        Ok(Statement::Break { location })
+    }
+
+    /// Parse continue statement
+    fn parse_continue_statement(&mut self) -> DrafResult<Statement> {
+        let location = self.current_location();
+        self.consume(TokenKind::Continue, "Expected 'continue'")?;
+
+        // Optional semicolon
+        if self.check(&TokenKind::Semicolon) {
+            self.advance();
+        }
+
+        Ok(Statement::Continue { location })
+    }
+
+    /// Parse variable declaration without consuming semicolon (for use in for loops)
+    fn parse_variable_declaration_no_semicolon(&mut self) -> DrafResult<Statement> {
+        let start_location = self.current_location();
+        let kind_token = self.current_token.unwrap();
+        let kind = match kind_token.kind {
+            TokenKind::Let => VariableKind::Let,
+            TokenKind::Const => VariableKind::Const,
+            TokenKind::Var => VariableKind::Var,
+            _ => unreachable!(),
+        };
+        self.advance();
+
+        let name_token = self.consume(TokenKind::Identifier, "Expected variable name")?;
+        let name = name_token.lexeme.clone();
+
+        let type_annotation = if self.check(&TokenKind::Colon) {
+            self.advance(); // consume ':'
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+
+        let initializer = if self.check(&TokenKind::Equal) {
+            self.advance(); // consume '='
+
+            // Skip any newlines after the assignment operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        // Don't consume semicolon here
+
+        Ok(Statement::VariableDeclaration {
+            name,
+            type_annotation,
+            initializer,
+            kind,
+            location: start_location,
+        })
+    }
+
+    /// Parse expression statement without consuming semicolon (for use in for loops)
+    fn parse_expression_statement_no_semicolon(&mut self) -> DrafResult<Statement> {
+        let start_location = self.current_location();
+        let expression = self.parse_expression()?;
+
+        Ok(Statement::ExpressionStatement {
+            expression,
+            location: start_location,
+        })
     }
 
     /// Parse block statement

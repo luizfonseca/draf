@@ -128,6 +128,12 @@ pub enum Statement {
         location: SourceLocation,
     },
 
+    /// Break statement: break;
+    Break { location: SourceLocation },
+
+    /// Continue statement: continue;
+    Continue { location: SourceLocation },
+
     /// Empty statement: ;
     Empty { location: SourceLocation },
 }
@@ -145,6 +151,8 @@ impl Statement {
             Statement::While { location, .. } => location,
             Statement::For { location, .. } => location,
             Statement::Return { location, .. } => location,
+            Statement::Break { location } => location,
+            Statement::Continue { location } => location,
             Statement::Empty { location } => location,
         }
     }

@@ -51,6 +51,8 @@ impl Token {
                 | TokenKind::Else
                 | TokenKind::For
                 | TokenKind::While
+                | TokenKind::Break
+                | TokenKind::Continue
                 | TokenKind::Return
                 | TokenKind::True
                 | TokenKind::False
@@ -149,6 +151,10 @@ pub enum TokenKind {
     While,
     #[token("return")]
     Return,
+    #[token("break")]
+    Break,
+    #[token("continue")]
+    Continue,
     #[token("true")]
     True,
     #[token("false")]
@@ -290,6 +296,8 @@ impl fmt::Display for TokenKind {
             TokenKind::For => "'for'",
             TokenKind::While => "'while'",
             TokenKind::Return => "'return'",
+            TokenKind::Break => "'break'",
+            TokenKind::Continue => "'continue'",
             TokenKind::True => "'true'",
             TokenKind::False => "'false'",
             TokenKind::Null => "'null'",
@@ -461,6 +469,8 @@ pub fn is_keyword(s: &str) -> bool {
             | "else"
             | "for"
             | "while"
+            | "break"
+            | "continue"
             | "return"
             | "true"
             | "false"

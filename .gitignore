@@ -11,3 +11,4 @@ gc
 /variable_*
 /const_*
 *.draf
+/bins/*

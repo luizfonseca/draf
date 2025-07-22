@@ -73,6 +73,19 @@ impl Type {
         }
     }
 
+    /// Check if this type can be used in boolean context
+    pub fn can_be_boolean(&self) -> bool {
+        match self {
+            Type::Boolean => true,
+            Type::Number => true, // Numbers can be truthy/falsy
+            Type::String => true, // Strings can be truthy/falsy
+            Type::Any => true,
+            Type::Null | Type::Undefined => true, // null/undefined are falsy
+            Type::Union(types) => types.iter().all(|t| t.can_be_boolean()),
+            _ => false,
+        }
+    }
+
     /// Check if this type can be assigned to another type
     pub fn is_assignable_to(&self, other: &Type) -> bool {
         // Exact match

@@ -11,6 +11,7 @@ use crate::types::Type;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 
+use inkwell::basic_block::BasicBlock;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
@@ -35,6 +36,17 @@ pub struct CodeGenerator<'ctx> {
     current_function: Option<FunctionValue<'ctx>>,
     /// Printf function for console output
     printf_function: Option<FunctionValue<'ctx>>,
+    /// Stack of loop contexts for break/continue
+    loop_stack: Vec<LoopContext<'ctx>>,
+}
+
+/// Context for a loop (for break/continue handling)
+#[derive(Debug, Clone)]
+struct LoopContext<'ctx> {
+    /// Block to jump to on break
+    break_block: BasicBlock<'ctx>,
+    /// Block to jump to on continue
+    continue_block: BasicBlock<'ctx>,
 }
 
 impl<'ctx> CodeGenerator<'ctx> {
@@ -51,6 +63,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             variable_types: HashMap::new(),
             current_function: None,
             printf_function: None,
+            loop_stack: Vec::new(),
         };
 
         // Declare printf function for console output
@@ -158,18 +171,38 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // Generate then branch
                 self.builder.position_at_end(then_block);
                 self.generate_statement(*then_branch)?;
-                self.builder
-                    .build_unconditional_branch(merge_block)
-                    .unwrap();
+
+                // Only add branch if block doesn't already have a terminator
+                if self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_terminator()
+                    .is_none()
+                {
+                    self.builder
+                        .build_unconditional_branch(merge_block)
+                        .unwrap();
+                }
 
                 // Generate else branch
                 self.builder.position_at_end(else_block);
                 if let Some(else_stmt) = else_branch {
                     self.generate_statement(*else_stmt)?;
                 }
-                self.builder
-                    .build_unconditional_branch(merge_block)
-                    .unwrap();
+
+                // Only add branch if block doesn't already have a terminator
+                if self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_terminator()
+                    .is_none()
+                {
+                    self.builder
+                        .build_unconditional_branch(merge_block)
+                        .unwrap();
+                }
 
                 // Continue with merge block
                 self.builder.position_at_end(merge_block);
@@ -180,6 +213,185 @@ impl<'ctx> CodeGenerator<'ctx> {
                 for statement in statements {
                     self.generate_statement(statement)?;
                 }
+                Ok(())
+            }
+
+            TypedStatement::While {
+                condition, body, ..
+            } => {
+                // Get current function
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+
+                // Create basic blocks
+                let condition_block = self
+                    .context
+                    .append_basic_block(current_fn, "while_condition");
+                let body_block = self.context.append_basic_block(current_fn, "while_body");
+                let after_block = self.context.append_basic_block(current_fn, "while_after");
+
+                // Jump to condition check
+                self.builder
+                    .build_unconditional_branch(condition_block)
+                    .unwrap();
+
+                // Generate condition check
+                self.builder.position_at_end(condition_block);
+                let condition_val = self.generate_expression(condition)?;
+                let condition_bool = condition_val.into_int_value();
+
+                // Build conditional branch
+                self.builder
+                    .build_conditional_branch(condition_bool, body_block, after_block)
+                    .unwrap();
+
+                // Set up loop context for break/continue
+                let loop_context = LoopContext {
+                    break_block: after_block,
+                    continue_block: condition_block,
+                };
+                self.loop_stack.push(loop_context);
+
+                // Generate body
+                self.builder.position_at_end(body_block);
+                self.generate_statement(*body)?;
+
+                // Jump back to condition (if no break/continue was hit)
+                if self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_terminator()
+                    .is_none()
+                {
+                    self.builder
+                        .build_unconditional_branch(condition_block)
+                        .unwrap();
+                }
+
+                // Pop loop context
+                self.loop_stack.pop();
+
+                // Continue with after block
+                self.builder.position_at_end(after_block);
+                Ok(())
+            }
+
+            TypedStatement::Break { .. } => {
+                if let Some(loop_context) = self.loop_stack.last() {
+                    self.builder
+                        .build_unconditional_branch(loop_context.break_block)
+                        .unwrap();
+                    Ok(())
+                } else {
+                    Err(DrafError::codegen_error("Break statement outside of loop"))
+                }
+            }
+
+            TypedStatement::Continue { .. } => {
+                if let Some(loop_context) = self.loop_stack.last() {
+                    self.builder
+                        .build_unconditional_branch(loop_context.continue_block)
+                        .unwrap();
+                    Ok(())
+                } else {
+                    Err(DrafError::codegen_error(
+                        "Continue statement outside of loop",
+                    ))
+                }
+            }
+
+            TypedStatement::For {
+                init,
+                condition,
+                update,
+                body,
+                ..
+            } => {
+                // Get current function
+                let current_fn = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+
+                // Create basic blocks
+                let init_block = self.context.append_basic_block(current_fn, "for_init");
+                let condition_block = self.context.append_basic_block(current_fn, "for_condition");
+                let body_block = self.context.append_basic_block(current_fn, "for_body");
+                let update_block = self.context.append_basic_block(current_fn, "for_update");
+                let after_block = self.context.append_basic_block(current_fn, "for_after");
+
+                // Jump to init block
+                self.builder.build_unconditional_branch(init_block).unwrap();
+
+                // Generate init statement (if present)
+                self.builder.position_at_end(init_block);
+                if let Some(init_stmt) = init {
+                    self.generate_statement(*init_stmt)?;
+                }
+                self.builder
+                    .build_unconditional_branch(condition_block)
+                    .unwrap();
+
+                // Generate condition check
+                self.builder.position_at_end(condition_block);
+                let should_continue = if let Some(cond_expr) = condition {
+                    let condition_val = self.generate_expression(cond_expr)?;
+                    condition_val.into_int_value()
+                } else {
+                    // No condition means infinite loop (like while(true))
+                    self.context.bool_type().const_int(1, false)
+                };
+
+                // Build conditional branch
+                self.builder
+                    .build_conditional_branch(should_continue, body_block, after_block)
+                    .unwrap();
+
+                // Set up loop context for break/continue
+                let loop_context = LoopContext {
+                    break_block: after_block,
+                    continue_block: update_block,
+                };
+                self.loop_stack.push(loop_context);
+
+                // Generate body
+                self.builder.position_at_end(body_block);
+                self.generate_statement(*body)?;
+
+                // Jump to update (if no break/continue was hit)
+                if self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_terminator()
+                    .is_none()
+                {
+                    self.builder
+                        .build_unconditional_branch(update_block)
+                        .unwrap();
+                }
+
+                // Generate update expression (if present)
+                self.builder.position_at_end(update_block);
+                if let Some(update_expr) = update {
+                    self.generate_expression(update_expr)?;
+                }
+                self.builder
+                    .build_unconditional_branch(condition_block)
+                    .unwrap();
+
+                // Pop loop context
+                self.loop_stack.pop();
+
+                // Continue with after block
+                self.builder.position_at_end(after_block);
                 Ok(())
             }
         }
