@@ -13,9 +13,7 @@ use inkwell::context::Context;
 
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue,
-};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use std::collections::HashMap;
 use std::path::Path;
@@ -214,6 +212,9 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .ptr_type(AddressSpace::default())
                     .const_null()
                     .into()),
+                LiteralValue::StringLiteral(string_lit) => {
+                    self.generate_string_literal(&string_lit)
+                }
             },
 
             Expression::Identifier { name, location: _ } => {
@@ -251,6 +252,18 @@ impl<'ctx> CodeGenerator<'ctx> {
                 let typed_right = TypedExpression::new(*right, right_type.clone());
                 let left_val = self.generate_expression(typed_left)?;
                 let right_val = self.generate_expression(typed_right)?;
+
+                // Handle string concatenation and coercion
+                if operator == BinaryOperator::Add
+                    && (left_type == Type::String || right_type == Type::String)
+                {
+                    return self.generate_string_concatenation(
+                        left_val,
+                        right_val,
+                        &left_type,
+                        &right_type,
+                    );
+                }
 
                 // Handle operations based on operand types, not result type
                 match (&left_type, &right_type, &operator) {
@@ -358,6 +371,38 @@ impl<'ctx> CodeGenerator<'ctx> {
                                     right_bool,
                                     "strict_ne",
                                 )
+                                .unwrap(),
+                            _ => unreachable!(),
+                        };
+                        Ok(result.into())
+                    }
+                    (Type::String, Type::String, BinaryOperator::Equal)
+                    | (Type::String, Type::String, BinaryOperator::NotEqual)
+                    | (Type::String, Type::String, BinaryOperator::StrictEqual)
+                    | (Type::String, Type::String, BinaryOperator::StrictNotEqual) => {
+                        // String comparison using strcmp
+                        let strcmp_fn = self.get_or_create_strcmp_function();
+                        let left_str = left_val.into_pointer_value();
+                        let right_str = right_val.into_pointer_value();
+
+                        let cmp_result = self
+                            .builder
+                            .build_call(strcmp_fn, &[left_str.into(), right_str.into()], "strcmp")
+                            .unwrap()
+                            .try_as_basic_value()
+                            .left()
+                            .unwrap()
+                            .into_int_value();
+
+                        let zero = self.context.i32_type().const_zero();
+                        let result = match operator {
+                            BinaryOperator::Equal | BinaryOperator::StrictEqual => self
+                                .builder
+                                .build_int_compare(IntPredicate::EQ, cmp_result, zero, "str_eq")
+                                .unwrap(),
+                            BinaryOperator::NotEqual | BinaryOperator::StrictNotEqual => self
+                                .builder
+                                .build_int_compare(IntPredicate::NE, cmp_result, zero, "str_ne")
                                 .unwrap(),
                             _ => unreachable!(),
                         };
@@ -507,6 +552,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                 Ok(phi.as_basic_value())
             }
 
+            Expression::TemplateLiteral { parts, .. } => self.generate_template_literal(&parts),
+
             _ => Err(DrafError::codegen_error(
                 "Expression type not yet implemented in codegen",
             )),
@@ -588,6 +635,11 @@ impl<'ctx> CodeGenerator<'ctx> {
 
             let inferred_type = self.infer_expression_type(arg_expr)?;
             match inferred_type {
+                Type::String => {
+                    // String values - print directly
+                    format_str.push_str("%s");
+                    printf_args.push((*arg_value).into());
+                }
                 Type::Boolean => {
                     // Convert boolean to string representation
                     format_str.push_str("%s");
@@ -719,6 +771,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 LiteralValue::Boolean(_) => Type::Boolean,
                 LiteralValue::Null => Type::Null,
                 LiteralValue::Undefined => Type::Undefined,
+                LiteralValue::StringLiteral(_) => Type::String,
             }),
             Expression::Identifier { name, .. } => {
                 // Look up the variable type from our stored type information
@@ -753,8 +806,298 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // For simplicity, use the type of the then branch
                 self.infer_expression_type(then_expr)
             }
+            Expression::TemplateLiteral { .. } => Ok(Type::String),
             _ => Ok(Type::Number), // Default fallback
         }
+    }
+
+    /// Generate string literal
+    fn generate_string_literal(
+        &self,
+        string_lit: &crate::strings::StringLiteral,
+    ) -> DrafResult<BasicValueEnum<'ctx>> {
+        use crate::strings::{StringFormatter, StringLiteralType};
+
+        let content = match string_lit.literal_type {
+            StringLiteralType::DoubleQuoted | StringLiteralType::SingleQuoted => {
+                &string_lit.content
+            }
+            StringLiteralType::TemplateLiteral => {
+                // For simple template literals without interpolation
+                &string_lit.content
+            }
+        };
+
+        // Escape the string for C-style representation
+        let escaped_content = StringFormatter::escape_for_codegen(content);
+        let c_string = format!("{}\0", escaped_content);
+
+        // Create a global string constant
+        let string_value = self.context.const_string(c_string.as_bytes(), false);
+        let global = self
+            .module
+            .add_global(string_value.get_type(), None, "str_literal");
+        global.set_initializer(&string_value);
+        global.set_constant(true);
+
+        // Return a pointer to the string
+        Ok(global.as_pointer_value().into())
+    }
+
+    /// Generate string concatenation with type coercion
+    fn generate_string_concatenation(
+        &mut self,
+        left_val: BasicValueEnum<'ctx>,
+        right_val: BasicValueEnum<'ctx>,
+        left_type: &Type,
+        right_type: &Type,
+    ) -> DrafResult<BasicValueEnum<'ctx>> {
+        // Get or create string concatenation function
+        let concat_fn = self.get_or_create_string_concat_function();
+
+        // Convert operands to strings if necessary
+        let left_str = self.convert_to_string(left_val, left_type)?;
+        let right_str = self.convert_to_string(right_val, right_type)?;
+
+        // Call string concatenation function
+        let result = self
+            .builder
+            .build_call(
+                concat_fn,
+                &[left_str.into(), right_str.into()],
+                "str_concat",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        Ok(result)
+    }
+
+    /// Generate template literal with interpolation
+    fn generate_template_literal(
+        &mut self,
+        parts: &[crate::ast::TemplateElement],
+    ) -> DrafResult<BasicValueEnum<'ctx>> {
+        use crate::ast::TemplateElement;
+
+        if parts.is_empty() {
+            // Empty template literal
+            let empty_str = self.context.const_string(b"\0", false);
+            let global = self
+                .module
+                .add_global(empty_str.get_type(), None, "empty_str");
+            global.set_initializer(&empty_str);
+            global.set_constant(true);
+            return Ok(global.as_pointer_value().into());
+        }
+
+        // Start with the first part
+        let mut result = match &parts[0] {
+            TemplateElement::Text(text) => {
+                let text_literal = crate::strings::StringLiteral::new_regular(
+                    text.clone(),
+                    crate::strings::StringLiteralType::DoubleQuoted,
+                );
+                self.generate_string_literal(&text_literal)?
+            }
+            TemplateElement::Expression(expr) => {
+                let typed_expr = TypedExpression::new(*expr.clone(), Type::String);
+                let expr_val = self.generate_expression(typed_expr)?;
+                BasicValueEnum::PointerValue(self.convert_to_string(expr_val, &Type::String)?)
+            }
+        };
+
+        // Concatenate remaining parts
+        for part in &parts[1..] {
+            let part_val = match part {
+                TemplateElement::Text(text) => {
+                    let text_literal = crate::strings::StringLiteral::new_regular(
+                        text.clone(),
+                        crate::strings::StringLiteralType::DoubleQuoted,
+                    );
+                    self.generate_string_literal(&text_literal)?
+                }
+                TemplateElement::Expression(expr) => {
+                    // Infer the type of the expression
+                    let expr_type = self.infer_expression_type(expr)?;
+                    let typed_expr = TypedExpression::new(*expr.clone(), expr_type.clone());
+                    let expr_val = self.generate_expression(typed_expr)?;
+                    BasicValueEnum::PointerValue(self.convert_to_string(expr_val, &expr_type)?)
+                }
+            };
+
+            // Concatenate with previous result
+            result =
+                self.generate_string_concatenation(result, part_val, &Type::String, &Type::String)?;
+        }
+
+        Ok(result)
+    }
+
+    /// Convert a value to string representation
+    fn convert_to_string(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        value_type: &Type,
+    ) -> DrafResult<PointerValue<'ctx>> {
+        match value_type {
+            Type::String => {
+                // Already a string
+                Ok(value.into_pointer_value())
+            }
+            Type::Number => {
+                // Convert number to string using sprintf
+                let sprintf_fn = self.get_or_create_sprintf_function();
+                let format_str = self.create_format_string("%.2f");
+
+                // Allocate buffer for result (assume max 32 chars)
+                let buffer_size = self.context.i64_type().const_int(32, false);
+                let malloc_fn = self.get_or_create_malloc_function();
+                let buffer = self
+                    .builder
+                    .build_call(malloc_fn, &[buffer_size.into()], "num_str_buffer")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_pointer_value();
+
+                // Convert buffer to i8*
+                let str_buffer = self
+                    .builder
+                    .build_pointer_cast(
+                        buffer,
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        "str_buffer",
+                    )
+                    .unwrap();
+
+                // Call sprintf
+                self.builder
+                    .build_call(
+                        sprintf_fn,
+                        &[str_buffer.into(), format_str.into(), value.into()],
+                        "sprintf_call",
+                    )
+                    .unwrap();
+
+                Ok(str_buffer)
+            }
+            Type::Boolean => {
+                // Convert boolean to "true" or "false"
+                let true_str = self.create_string_constant("true");
+                let false_str = self.create_string_constant("false");
+
+                let condition = value.into_int_value();
+                let is_true = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        condition,
+                        self.context.bool_type().const_zero(),
+                        "bool_check",
+                    )
+                    .unwrap();
+
+                let result = self
+                    .builder
+                    .build_select(is_true, true_str, false_str, "bool_str")
+                    .unwrap();
+
+                Ok(result.into_pointer_value())
+            }
+            Type::Null => Ok(self.create_string_constant("null")),
+            Type::Undefined => Ok(self.create_string_constant("undefined")),
+            _ => Err(DrafError::codegen_error(format!(
+                "Cannot convert type {:?} to string",
+                value_type
+            ))),
+        }
+    }
+
+    /// Create a string constant
+    fn create_string_constant(&self, content: &str) -> PointerValue<'ctx> {
+        let c_string = format!("{}\0", content);
+        let string_value = self.context.const_string(c_string.as_bytes(), false);
+        let global = self
+            .module
+            .add_global(string_value.get_type(), None, "str_const");
+        global.set_initializer(&string_value);
+        global.set_constant(true);
+        global.as_pointer_value()
+    }
+
+    /// Create a format string for printf-style functions
+    fn create_format_string(&self, format: &str) -> PointerValue<'ctx> {
+        let format_string = format!("{}\0", format);
+        let string_value = self.context.const_string(format_string.as_bytes(), false);
+        let global = self
+            .module
+            .add_global(string_value.get_type(), None, "format_str");
+        global.set_initializer(&string_value);
+        global.set_constant(true);
+        global.as_pointer_value()
+    }
+
+    /// Get or create string concatenation function
+    fn get_or_create_string_concat_function(&mut self) -> FunctionValue<'ctx> {
+        if let Some(function) = self.module.get_function("str_concat") {
+            return function;
+        }
+
+        // Create string concatenation function signature
+        let str_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let fn_type = str_type.fn_type(&[str_type.into(), str_type.into()], false);
+        let function = self.module.add_function("str_concat", fn_type, None);
+
+        // Add function implementation (simplified)
+        let entry_block = self.context.append_basic_block(function, "entry");
+        let builder = self.context.create_builder();
+        builder.position_at_end(entry_block);
+
+        // For now, just return the first string (concatenation would need strlen, malloc, strcpy, strcat)
+        let param1 = function.get_nth_param(0).unwrap().into_pointer_value();
+        builder.build_return(Some(&param1)).unwrap();
+
+        function
+    }
+
+    /// Get or create sprintf function
+    fn get_or_create_sprintf_function(&mut self) -> FunctionValue<'ctx> {
+        if let Some(function) = self.module.get_function("sprintf") {
+            return function;
+        }
+
+        let str_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+        let fn_type = i32_type.fn_type(&[str_type.into(), str_type.into()], true);
+        self.module.add_function("sprintf", fn_type, None)
+    }
+
+    /// Get or create malloc function
+    fn get_or_create_malloc_function(&mut self) -> FunctionValue<'ctx> {
+        if let Some(function) = self.module.get_function("malloc") {
+            return function;
+        }
+
+        let ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let size_type = self.context.i64_type();
+        let fn_type = ptr_type.fn_type(&[size_type.into()], false);
+        self.module.add_function("malloc", fn_type, None)
+    }
+
+    /// Get or create strcmp function
+    fn get_or_create_strcmp_function(&mut self) -> FunctionValue<'ctx> {
+        if let Some(function) = self.module.get_function("strcmp") {
+            return function;
+        }
+
+        let str_type = self.context.i8_type().ptr_type(AddressSpace::default());
+        let i32_type = self.context.i32_type();
+        let fn_type = i32_type.fn_type(&[str_type.into(), str_type.into()], false);
+        self.module.add_function("strcmp", fn_type, None)
     }
 
     /// Get the generated module

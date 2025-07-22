@@ -634,14 +634,37 @@ impl<'a> Parser<'a> {
                         location,
                     })
                 }
-                TokenKind::StringLiteral => {
+                TokenKind::StringLiteralDouble => {
                     // Remove quotes from string literal
-                    let value = token.lexeme[1..token.lexeme.len() - 1].to_string();
+                    let content = token.lexeme[1..token.lexeme.len() - 1].to_string();
+                    let string_literal = crate::strings::StringLiteral::new_regular(
+                        content,
+                        crate::strings::StringLiteralType::DoubleQuoted,
+                    );
                     self.advance();
                     Ok(Expression::Literal {
-                        value: LiteralValue::String(value),
+                        value: LiteralValue::StringLiteral(string_literal),
                         location,
                     })
+                }
+                TokenKind::StringLiteralSingle => {
+                    // Remove quotes from string literal
+                    let content = token.lexeme[1..token.lexeme.len() - 1].to_string();
+                    let string_literal = crate::strings::StringLiteral::new_regular(
+                        content,
+                        crate::strings::StringLiteralType::SingleQuoted,
+                    );
+                    self.advance();
+                    Ok(Expression::Literal {
+                        value: LiteralValue::StringLiteral(string_literal),
+                        location,
+                    })
+                }
+                TokenKind::TemplateLiteral => {
+                    // Remove backticks from template literal
+                    let content = token.lexeme[1..token.lexeme.len() - 1].to_string();
+                    self.advance();
+                    self.parse_template_literal(content, location)
                 }
                 TokenKind::Console => {
                     self.advance(); // consume 'console'
@@ -771,6 +794,81 @@ impl<'a> Parser<'a> {
                 0,
                 "Expected type, found end of file",
             ))
+        }
+    }
+
+    /// Parse template literal with interpolation
+    fn parse_template_literal(
+        &mut self,
+        content: String,
+        location: SourceLocation,
+    ) -> DrafResult<Expression> {
+        use crate::ast::{Expression as AstExpression, TemplateElement};
+        use crate::strings::{StringLiteral, StringLiteralType, StringValidator};
+
+        // Validate template literal syntax
+        if let Err(err) =
+            StringValidator::validate_string_literal(&content, &StringLiteralType::TemplateLiteral)
+        {
+            return Err(DrafError::parse_error(
+                location.line,
+                location.column,
+                format!("Invalid template literal: {}", err),
+            ));
+        }
+
+        let string_literal = StringLiteral::new_template(content.clone());
+
+        // Check if this is a simple template literal without interpolation
+        if let Some(template_parts) = &string_literal.template_parts {
+            if template_parts.expressions.is_empty() {
+                // Simple template literal, treat as regular string
+                return Ok(AstExpression::Literal {
+                    value: LiteralValue::StringLiteral(string_literal),
+                    location,
+                });
+            }
+
+            // Template literal with interpolation
+            let mut elements = Vec::new();
+
+            for (i, static_part) in template_parts.static_parts.iter().enumerate() {
+                if !static_part.is_empty() {
+                    elements.push(TemplateElement::text(static_part.clone()));
+                }
+
+                if let Some(expr_str) = template_parts.expressions.get(i) {
+                    // Parse the expression string into an AST node
+                    // For now, we'll create a simple identifier or literal
+                    // In a full implementation, we'd recursively parse the expression
+                    let expr = if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        // Simple identifier
+                        AstExpression::Identifier {
+                            name: expr_str.clone(),
+                            location: location.clone(),
+                        }
+                    } else {
+                        // For complex expressions, we'll create a placeholder for now
+                        // This would need recursive parsing in a full implementation
+                        AstExpression::Identifier {
+                            name: expr_str.clone(),
+                            location: location.clone(),
+                        }
+                    };
+                    elements.push(TemplateElement::expression(expr));
+                }
+            }
+
+            Ok(AstExpression::TemplateLiteral {
+                parts: elements,
+                location,
+            })
+        } else {
+            // Fallback to regular string literal
+            Ok(AstExpression::Literal {
+                value: LiteralValue::StringLiteral(string_literal),
+                location,
+            })
         }
     }
 

@@ -216,6 +216,7 @@ impl SemanticAnalyzer {
                     LiteralValue::Boolean(_) => Type::Boolean,
                     LiteralValue::Null => Type::Null,
                     LiteralValue::Undefined => Type::Undefined,
+                    LiteralValue::StringLiteral(_) => Type::String,
                 };
 
                 Ok(TypedExpression {
@@ -446,6 +447,57 @@ impl SemanticAnalyzer {
                         location,
                     },
                     type_info: result_type,
+                    operand_types: None,
+                })
+            }
+
+            Expression::TemplateLiteral { parts, location } => {
+                // Analyze all interpolated expressions in the template literal
+                let mut typed_parts = Vec::new();
+
+                for part in parts {
+                    match part {
+                        crate::ast::TemplateElement::Text(ref _text) => {
+                            // Text parts don't need analysis
+                            typed_parts.push(part.clone());
+                        }
+                        crate::ast::TemplateElement::Expression(expr) => {
+                            // Analyze the interpolated expression
+                            let typed_expr = self.analyze_expression(*expr.clone())?;
+
+                            // Ensure the expression type can be converted to string
+                            match typed_expr.type_info {
+                                Type::Number
+                                | Type::Boolean
+                                | Type::String
+                                | Type::Null
+                                | Type::Undefined => {
+                                    // These types can be converted to string
+                                    typed_parts.push(crate::ast::TemplateElement::expression(
+                                        typed_expr.expression,
+                                    ));
+                                }
+                                _ => {
+                                    return Err(DrafError::semantic_error(
+                                        location.line,
+                                        location.column,
+                                        format!(
+                                            "Cannot interpolate type {:?} in template literal",
+                                            typed_expr.type_info
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(TypedExpression {
+                    expression: Expression::TemplateLiteral {
+                        parts: typed_parts,
+                        location: location.clone(),
+                    },
+                    type_info: Type::String,
                     operand_types: None,
                 })
             }

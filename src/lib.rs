@@ -9,6 +9,7 @@ pub mod error;
 pub mod lexer;
 pub mod parser;
 pub mod semantic;
+pub mod strings;
 pub mod types;
 
 use error::{DrafError, DrafResult};

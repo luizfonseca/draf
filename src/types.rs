@@ -169,6 +169,15 @@ impl Type {
             BinaryOp::Add => match (self, other) {
                 (Type::Number, Type::Number) => Some(Type::Number),
                 (Type::String, Type::String) => Some(Type::String),
+                // String concatenation with type coercion (like JS/TS)
+                (Type::String, Type::Number) => Some(Type::String),
+                (Type::Number, Type::String) => Some(Type::String),
+                (Type::String, Type::Boolean) => Some(Type::String),
+                (Type::Boolean, Type::String) => Some(Type::String),
+                (Type::String, Type::Null) => Some(Type::String),
+                (Type::Null, Type::String) => Some(Type::String),
+                (Type::String, Type::Undefined) => Some(Type::String),
+                (Type::Undefined, Type::String) => Some(Type::String),
                 _ => None,
             },
             BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => match (self, other) {

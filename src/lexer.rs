@@ -97,7 +97,9 @@ impl Token {
         matches!(
             self.kind,
             TokenKind::NumberLiteral
-                | TokenKind::StringLiteral
+                | TokenKind::StringLiteralDouble
+                | TokenKind::StringLiteralSingle
+                | TokenKind::TemplateLiteral
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::Null
@@ -120,8 +122,13 @@ pub enum TokenKind {
     NumberLiteral,
 
     #[regex(r#""([^"\\]|\\.)*""#)]
+    StringLiteralDouble,
+
     #[regex(r#"'([^'\\]|\\.)*'"#)]
-    StringLiteral,
+    StringLiteralSingle,
+
+    #[regex(r"`([^`\\]|\\.)*`")]
+    TemplateLiteral,
 
     // Keywords
     #[token("let")]
@@ -271,7 +278,9 @@ impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             TokenKind::NumberLiteral => "number literal",
-            TokenKind::StringLiteral => "string literal",
+            TokenKind::StringLiteralDouble => "string literal (double quoted)",
+            TokenKind::StringLiteralSingle => "string literal (single quoted)",
+            TokenKind::TemplateLiteral => "template literal",
             TokenKind::Let => "'let'",
             TokenKind::Const => "'const'",
             TokenKind::Var => "'var'",

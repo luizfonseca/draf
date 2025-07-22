@@ -305,24 +305,27 @@ pub enum Expression {
         location: SourceLocation,
     },
 
-    /// Object literal: { a: 1, b: 2 }
     Object {
         fields: Vec<ObjectField>,
         location: SourceLocation,
     },
 
-    /// Type cast: value as Type
     TypeCast {
         expression: Box<Expression>,
         target_type: TypeAnnotation,
         location: SourceLocation,
     },
 
-    /// Conditional expression: condition ? then_expr : else_expr
     Conditional {
         condition: Box<Expression>,
         then_expr: Box<Expression>,
         else_expr: Box<Expression>,
+        location: SourceLocation,
+    },
+
+    /// Template literal with interpolation
+    TemplateLiteral {
+        parts: Vec<TemplateElement>,
         location: SourceLocation,
     },
 }
@@ -336,13 +339,14 @@ impl Expression {
             Expression::Unary { location, .. } => location,
             Expression::Assignment { location, .. } => location,
             Expression::Call { location, .. } => location,
+            Expression::ConsoleCall { location, .. } => location,
             Expression::MemberAccess { location, .. } => location,
             Expression::ArrayAccess { location, .. } => location,
             Expression::Array { location, .. } => location,
             Expression::Object { location, .. } => location,
             Expression::TypeCast { location, .. } => location,
             Expression::Conditional { location, .. } => location,
-            Expression::ConsoleCall { location, .. } => location,
+            Expression::TemplateLiteral { location, .. } => location,
         }
     }
 }
@@ -396,6 +400,8 @@ pub enum LiteralValue {
     Boolean(bool),
     Null,
     Undefined,
+    /// String literal with type information
+    StringLiteral(crate::strings::StringLiteral),
 }
 
 impl fmt::Display for LiteralValue {
@@ -406,6 +412,13 @@ impl fmt::Display for LiteralValue {
             LiteralValue::Boolean(b) => write!(f, "{}", b),
             LiteralValue::Null => write!(f, "null"),
             LiteralValue::Undefined => write!(f, "undefined"),
+            LiteralValue::StringLiteral(lit) => match lit.literal_type {
+                crate::strings::StringLiteralType::DoubleQuoted => write!(f, "\"{}\"", lit.content),
+                crate::strings::StringLiteralType::SingleQuoted => write!(f, "'{}'", lit.content),
+                crate::strings::StringLiteralType::TemplateLiteral => {
+                    write!(f, "`{}`", lit.content)
+                }
+            },
         }
     }
 }
@@ -657,6 +670,25 @@ impl TypeAnnotationField {
             optional,
             location,
         }
+    }
+}
+
+/// Represents an element in a template literal
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum TemplateElement {
+    /// Static text part
+    Text(String),
+    /// Expression to be interpolated
+    Expression(Box<Expression>),
+}
+
+impl TemplateElement {
+    pub fn text(content: String) -> Self {
+        Self::Text(content)
+    }
+
+    pub fn expression(expr: Expression) -> Self {
+        Self::Expression(Box::new(expr))
     }
 }
 

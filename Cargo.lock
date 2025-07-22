@@ -260,6 +260,7 @@ dependencies = [
  "criterion",
  "env_logger",
  "inkwell",
+ "lazy_static",
  "logos",
  "serde",
  "serde_json",
