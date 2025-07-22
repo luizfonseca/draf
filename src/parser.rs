@@ -27,12 +27,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Advance to the next token
-    fn advance(&mut self) {
+    pub fn advance(&mut self) -> Option<&'a Token> {
+        let current = self.current_token;
         self.current_token = self.tokens.next();
+        current
     }
 
     /// Check if current token matches expected kind
-    fn check(&self, kind: &TokenKind) -> bool {
+    pub fn check(&self, kind: &TokenKind) -> bool {
         match self.current_token {
             Some(token) => &token.kind == kind,
             None => false,
@@ -40,12 +42,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Peek at the next token without consuming it
-    fn peek(&mut self) -> Option<&'a Token> {
+    pub fn peek(&mut self) -> Option<&'a Token> {
         self.tokens.peek().copied()
     }
 
     /// Consume current token if it matches expected kind
-    fn consume(&mut self, kind: TokenKind, message: &str) -> DrafResult<&'a Token> {
+    pub fn consume(&mut self, kind: TokenKind, message: &str) -> DrafResult<&'a Token> {
         if let Some(token) = self.current_token {
             if token.kind == kind {
                 let result = token;
@@ -84,7 +86,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a statement
-    fn parse_statement(&mut self) -> DrafResult<Statement> {
+    pub fn parse_statement(&mut self) -> DrafResult<Statement> {
         // Skip any leading newlines
         while self.check(&TokenKind::Newline) {
             self.advance();
@@ -166,13 +168,160 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse function declaration (placeholder)
-    fn parse_function_declaration(&mut self) -> DrafResult<Statement> {
-        Err(DrafError::parse_error(
-            self.current_token.unwrap().line,
-            self.current_token.unwrap().column,
-            "Function declarations not yet implemented",
-        ))
+    /// Parse function declaration: function name() {} or async function name() {}
+    pub fn parse_function_declaration(&mut self) -> DrafResult<Statement> {
+        let start_location = self.current_location();
+
+        // Check for async keyword
+        let is_async = if self.check(&TokenKind::Identifier) {
+            if let Some(token) = self.current_token {
+                if token.lexeme == "async" {
+                    self.advance(); // consume 'async'
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // Consume 'function' keyword
+        self.consume(TokenKind::Function, "Expected 'function' keyword")?;
+
+        // Parse function name
+        let name_token = self.consume(TokenKind::Identifier, "Expected function name")?;
+        let name = name_token.lexeme.clone();
+
+        // Parse parameters
+        self.consume(TokenKind::LeftParen, "Expected '(' after function name")?;
+        let parameters = self.parse_function_parameters()?;
+        self.consume(TokenKind::RightParen, "Expected ')' after parameters")?;
+
+        // Parse optional return type
+        let return_type = if self.check(&TokenKind::Colon) {
+            self.advance(); // consume ':'
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+
+        // Parse function body
+        let body = self.parse_block_statement()?;
+
+        let kind = if is_async {
+            FunctionKind::Async
+        } else {
+            FunctionKind::Regular
+        };
+
+        Ok(Statement::FunctionDeclaration {
+            name,
+            kind,
+            parameters,
+            return_type,
+            body: Box::new(body),
+            location: start_location,
+        })
+    }
+
+    /// Parse function parameters: (param1: type1, param2?: type2)
+    fn parse_function_parameters(&mut self) -> DrafResult<Vec<Parameter>> {
+        let mut parameters = Vec::new();
+
+        // Skip any leading newlines
+        while self.check(&TokenKind::Newline) {
+            self.advance();
+        }
+
+        // Handle empty parameter list
+        if self.check(&TokenKind::RightParen) {
+            return Ok(parameters);
+        }
+
+        loop {
+            // Skip newlines before parameter
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            let param = self.parse_function_parameter()?;
+            parameters.push(param);
+
+            // Skip newlines after parameter
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            if self.check(&TokenKind::Comma) {
+                self.advance(); // consume ','
+
+                // Skip newlines after comma
+                while self.check(&TokenKind::Newline) {
+                    self.advance();
+                }
+
+                // Allow trailing comma
+                if self.check(&TokenKind::RightParen) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(parameters)
+    }
+
+    /// Parse single function parameter: name: type or name?: type
+    fn parse_function_parameter(&mut self) -> DrafResult<Parameter> {
+        let location = self.current_location();
+
+        // Parse parameter name
+        let name_token = self.consume(TokenKind::Identifier, "Expected parameter name")?;
+        let name = name_token.lexeme.clone();
+
+        // Skip newlines after parameter name
+        while self.check(&TokenKind::Newline) {
+            self.advance();
+        }
+
+        // Check for optional parameter
+        let optional = if self.check(&TokenKind::Question) {
+            self.advance(); // consume '?'
+
+            // Skip newlines after question mark
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            true
+        } else {
+            false
+        };
+
+        // Parse type annotation
+        let type_annotation = if self.check(&TokenKind::Colon) {
+            self.advance(); // consume ':'
+
+            // Skip newlines after colon
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+
+        Ok(Parameter {
+            name,
+            type_annotation,
+            optional,
+            location,
+        })
     }
 
     /// Parse interface declaration
@@ -689,7 +838,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse block statement
-    fn parse_block_statement(&mut self) -> DrafResult<Statement> {
+    pub fn parse_block_statement(&mut self) -> DrafResult<Statement> {
         let start_location = self.current_location();
         self.consume(TokenKind::LeftBrace, "Expected '{'")?;
 
@@ -730,12 +879,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse expression using precedence climbing
-    fn parse_expression(&mut self) -> DrafResult<Expression> {
+    pub fn parse_expression(&mut self) -> DrafResult<Expression> {
         self.parse_assignment()
     }
 
     /// Parse assignment expression
-    fn parse_assignment(&mut self) -> DrafResult<Expression> {
+    pub fn parse_assignment(&mut self) -> DrafResult<Expression> {
         let expr = self.parse_ternary()?;
 
         if self.check(&TokenKind::Equal) {
@@ -995,6 +1144,54 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// Parse argument list for function calls: (arg1, arg2, arg3)
+    fn parse_argument_list(&mut self) -> DrafResult<Vec<Expression>> {
+        let mut arguments = Vec::new();
+
+        // Skip any leading newlines
+        while self.check(&TokenKind::Newline) {
+            self.advance();
+        }
+
+        // Handle empty argument list
+        if self.check(&TokenKind::RightParen) {
+            return Ok(arguments);
+        }
+
+        loop {
+            // Skip newlines before argument
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            let arg = self.parse_assignment()?;
+            arguments.push(arg);
+
+            // Skip newlines after argument
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            if self.check(&TokenKind::Comma) {
+                self.advance(); // consume ','
+
+                // Skip newlines after comma
+                while self.check(&TokenKind::Newline) {
+                    self.advance();
+                }
+
+                // Allow trailing comma
+                if self.check(&TokenKind::RightParen) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(arguments)
+    }
+
     /// Parse unary expression
     fn parse_unary(&mut self) -> DrafResult<Expression> {
         if let Some(token) = self.current_token {
@@ -1026,34 +1223,90 @@ impl<'a> Parser<'a> {
         loop {
             if let Some(token) = self.current_token {
                 match token.kind {
-                    // Regular member access: obj.property
+                    // Regular member access: obj.property or method call obj.method()
                     TokenKind::Dot => {
                         let location = self.current_location();
                         self.advance(); // consume '.'
 
                         let property_token = self
                             .consume(TokenKind::Identifier, "Expected property name after '.'")?;
+                        let property_name = property_token.lexeme.clone();
 
-                        expr = Expression::MemberAccess {
-                            object: Box::new(expr),
-                            property: property_token.lexeme.clone(),
-                            optional: false,
-                            location,
-                        };
+                        // Check if this is a method call
+                        if self.check(&TokenKind::LeftParen) {
+                            self.advance(); // consume '('
+                            let arguments = self.parse_argument_list()?;
+                            self.consume(
+                                TokenKind::RightParen,
+                                "Expected ')' after method arguments",
+                            )?;
+
+                            expr = Expression::MethodCall {
+                                object: Box::new(expr),
+                                method: property_name,
+                                arguments,
+                                location,
+                            };
+                        } else {
+                            expr = Expression::MemberAccess {
+                                object: Box::new(expr),
+                                property: property_name,
+                                optional: false,
+                                location,
+                            };
+                        }
                     }
 
-                    // Optional chaining: obj?.property
+                    // Optional chaining: obj?.property or obj?.method()
                     TokenKind::QuestionDot => {
                         let location = self.current_location();
                         self.advance(); // consume '?.'
 
                         let property_token = self
                             .consume(TokenKind::Identifier, "Expected property name after '?.'")?;
+                        let property_name = property_token.lexeme.clone();
 
-                        expr = Expression::MemberAccess {
-                            object: Box::new(expr),
-                            property: property_token.lexeme.clone(),
-                            optional: true,
+                        // Check if this is an optional method call
+                        if self.check(&TokenKind::LeftParen) {
+                            self.advance(); // consume '('
+                            let arguments = self.parse_argument_list()?;
+                            self.consume(
+                                TokenKind::RightParen,
+                                "Expected ')' after method arguments",
+                            )?;
+
+                            // For now, treat optional method calls as regular method calls
+                            // TODO: Add proper optional chaining for method calls
+                            expr = Expression::MethodCall {
+                                object: Box::new(expr),
+                                method: property_name,
+                                arguments,
+                                location,
+                            };
+                        } else {
+                            expr = Expression::MemberAccess {
+                                object: Box::new(expr),
+                                property: property_name,
+                                optional: true,
+                                location,
+                            };
+                        }
+                    }
+
+                    // Function call: expr(args)
+                    TokenKind::LeftParen => {
+                        let location = self.current_location();
+                        self.advance(); // consume '('
+
+                        let arguments = self.parse_argument_list()?;
+                        self.consume(
+                            TokenKind::RightParen,
+                            "Expected ')' after function arguments",
+                        )?;
+
+                        expr = Expression::Call {
+                            callee: Box::new(expr),
+                            arguments,
                             location,
                         };
                     }
@@ -1113,7 +1366,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse primary expression
-    fn parse_primary(&mut self) -> DrafResult<Expression> {
+    pub fn parse_primary(&mut self) -> DrafResult<Expression> {
         if let Some(token) = self.current_token {
             let location = self.current_location();
 
@@ -1393,7 +1646,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse type annotation
-    fn parse_type_annotation(&mut self) -> DrafResult<TypeAnnotation> {
+    pub fn parse_type_annotation(&mut self) -> DrafResult<TypeAnnotation> {
         self.parse_union_type()
     }
 
@@ -1795,7 +2048,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Get current source location
-    fn current_location(&self) -> SourceLocation {
+    pub fn current_location(&self) -> SourceLocation {
         if let Some(token) = self.current_token {
             SourceLocation::new(token.line, token.column, token.start, token.end)
         } else {
@@ -1804,7 +2057,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Check if we're at the end of input
-    fn is_at_end(&self) -> bool {
+    pub fn is_at_end(&self) -> bool {
         match self.current_token {
             Some(token) => token.kind == TokenKind::Eof,
             None => true,

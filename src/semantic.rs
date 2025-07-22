@@ -463,6 +463,55 @@ impl SemanticAnalyzer {
             }
 
             // Placeholder implementations for other statement types
+            Statement::FunctionDeclaration {
+                name,
+                kind,
+                parameters,
+                return_type,
+                body,
+                location,
+            } => {
+                // Resolve parameter types
+                let mut param_types = Vec::new();
+                for param in &parameters {
+                    let param_type = if let Some(type_ann) = &param.type_annotation {
+                        self.resolve_type_annotation(type_ann)?
+                    } else {
+                        Type::Any
+                    };
+                    param_types.push(param_type);
+                }
+
+                // Resolve return type
+                let resolved_return_type = if let Some(ret_type) = &return_type {
+                    self.resolve_type_annotation(ret_type)?
+                } else {
+                    Type::Void
+                };
+
+                // Create function type
+                let function_type = Type::Function {
+                    params: param_types,
+                    return_type: Box::new(resolved_return_type),
+                };
+
+                // Add function to symbol table
+                self.context.add_variable(name.clone(), function_type);
+
+                // TODO: Analyze function body with parameter scope
+                // For now, just analyze the body without parameter context
+                let typed_body = self.analyze_statement(*body)?;
+
+                Ok(TypedStatement::FunctionDeclaration {
+                    name,
+                    kind,
+                    parameters,
+                    return_type,
+                    body: Box::new(typed_body),
+                    location,
+                })
+            }
+
             _ => Err(DrafError::semantic_error(
                 statement.location().line,
                 statement.location().column,
@@ -1037,6 +1086,68 @@ impl SemanticAnalyzer {
                 }
             }
 
+            Expression::Call {
+                callee,
+                arguments,
+                location,
+            } => {
+                // Analyze the callee expression
+                let typed_callee = self.analyze_expression(*callee)?;
+
+                // Analyze arguments
+                let mut typed_arguments = Vec::new();
+                for arg in arguments {
+                    typed_arguments.push(self.analyze_expression(arg)?);
+                }
+
+                // For now, assume function calls return Any type
+                // TODO: Implement proper function signature checking
+                Ok(TypedExpression {
+                    expression: Expression::Call {
+                        callee: Box::new(typed_callee.expression),
+                        arguments: typed_arguments
+                            .iter()
+                            .map(|ta| ta.expression.clone())
+                            .collect(),
+                        location,
+                    },
+                    type_info: Type::Any,
+                    operand_types: None,
+                })
+            }
+
+            Expression::MethodCall {
+                object,
+                method,
+                arguments,
+                location,
+            } => {
+                // Analyze the object expression
+                let typed_object = self.analyze_expression(*object)?;
+
+                // Analyze arguments
+                let mut typed_arguments = Vec::new();
+                for arg in arguments {
+                    typed_arguments.push(self.analyze_expression(arg)?);
+                }
+
+                // For now, assume method calls return Any type
+                // TODO: Implement proper method signature checking
+                Ok(TypedExpression {
+                    expression: Expression::MethodCall {
+                        object: Box::new(typed_object.expression),
+                        method,
+                        arguments: typed_arguments
+                            .iter()
+                            .map(|ta| ta.expression.clone())
+                            .collect(),
+                        location,
+                    },
+                    type_info: Type::Any,
+                    operand_types: None,
+                })
+            }
+
             _ => Err(DrafError::semantic_error(
                 expression.location().line,
                 expression.location().column,
@@ -1108,6 +1219,14 @@ pub enum TypedStatement {
         extends: Vec<String>,
         fields: Vec<InterfaceField>,
         methods: Vec<InterfaceMethod>,
+        location: SourceLocation,
+    },
+    FunctionDeclaration {
+        name: String,
+        kind: FunctionKind,
+        parameters: Vec<Parameter>,
+        return_type: Option<TypeAnnotation>,
+        body: Box<TypedStatement>,
         location: SourceLocation,
     },
     // Other statement types will be added as needed

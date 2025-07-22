@@ -467,6 +467,42 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // Interface declarations don't generate runtime code
                 Ok(())
             }
+
+            TypedStatement::FunctionDeclaration {
+                name,
+                kind,
+                parameters,
+                return_type,
+                body,
+                location: _,
+            } => {
+                // For now, implement basic function declaration support
+                // TODO: Implement proper function codegen with LLVM functions
+
+                // Create LLVM function type
+                let mut param_types = Vec::new();
+                for param in &parameters {
+                    // For now, all parameters are f64 (numbers)
+                    // TODO: Use actual parameter types
+                    param_types.push(self.context.f64_type().into());
+                }
+
+                // Determine return type
+                let fn_type = if return_type.is_some() {
+                    // TODO: Parse actual return type
+                    self.context.f64_type().fn_type(&param_types, false)
+                } else {
+                    self.context.void_type().fn_type(&param_types, false)
+                };
+
+                // Add function to module
+                let _function = self.module.add_function(&name, fn_type, None);
+
+                // TODO: Generate function body
+                // For now, just skip function body generation
+
+                Ok(())
+            }
         }
     }
 

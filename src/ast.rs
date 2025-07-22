@@ -69,9 +69,10 @@ pub enum Statement {
     /// Function declaration: function add(a: number, b: number): number { ... }
     FunctionDeclaration {
         name: String,
+        kind: FunctionKind,
         parameters: Vec<Parameter>,
         return_type: Option<TypeAnnotation>,
-        body: Block,
+        body: Box<Statement>,
         location: SourceLocation,
     },
 
@@ -194,6 +195,26 @@ impl fmt::Display for VariableKind {
             VariableKind::Var => write!(f, "var"),
         }
     }
+}
+
+/// Function declaration kinds
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FunctionKind {
+    /// Regular function: function name() {}
+    Regular,
+    /// Async function: async function name() {}
+    Async,
+    /// Arrow function: const name = () => {}
+    Arrow,
+}
+
+/// Arrow function body can be either an expression or a block
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ArrowFunctionBody {
+    /// Expression body: () => expr
+    Expression(Box<Expression>),
+    /// Block body: () => { statements }
+    Block(Box<Statement>),
 }
 
 /// Function parameter
@@ -356,6 +377,23 @@ pub enum Expression {
         parts: Vec<TemplateElement>,
         location: SourceLocation,
     },
+
+    /// Arrow function: (x, y) => x + y
+    ArrowFunction {
+        parameters: Vec<Parameter>,
+        return_type: Option<TypeAnnotation>,
+        body: ArrowFunctionBody,
+        is_async: bool,
+        location: SourceLocation,
+    },
+
+    /// Method call: obj.method(args)
+    MethodCall {
+        object: Box<Expression>,
+        method: String,
+        arguments: Vec<Expression>,
+        location: SourceLocation,
+    },
 }
 
 impl Expression {
@@ -375,6 +413,8 @@ impl Expression {
             Expression::TypeCast { location, .. } => location,
             Expression::Conditional { location, .. } => location,
             Expression::TemplateLiteral { location, .. } => location,
+            Expression::ArrowFunction { location, .. } => location,
+            Expression::MethodCall { location, .. } => location,
         }
     }
 }
