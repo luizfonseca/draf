@@ -311,17 +311,19 @@ pub enum Expression {
         location: SourceLocation,
     },
 
-    /// Member access: obj.property
+    /// Member access: obj.property or obj?.property
     MemberAccess {
         object: Box<Expression>,
         property: String,
+        optional: bool, // true for obj?.property
         location: SourceLocation,
     },
 
-    /// Array access: arr[index]
+    /// Array/bracket access: arr[index] or obj?.['key']
     ArrayAccess {
         array: Box<Expression>,
         index: Box<Expression>,
+        optional: bool, // true for obj?.[index]
         location: SourceLocation,
     },
 
@@ -505,6 +507,7 @@ pub enum UnaryOperator {
     Minus,      // -x
     Plus,       // +x
     LogicalNot, // !x
+    Typeof,     // typeof x
 }
 
 impl fmt::Display for UnaryOperator {
@@ -513,6 +516,7 @@ impl fmt::Display for UnaryOperator {
             UnaryOperator::Minus => "-",
             UnaryOperator::Plus => "+",
             UnaryOperator::LogicalNot => "!",
+            UnaryOperator::Typeof => "typeof",
         };
         write!(f, "{}", symbol)
     }

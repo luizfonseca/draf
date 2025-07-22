@@ -67,6 +67,7 @@ impl Token {
                 | TokenKind::Interface
                 | TokenKind::Class
                 | TokenKind::Type
+                | TokenKind::Typeof
                 | TokenKind::Export
                 | TokenKind::Import
         )
@@ -183,6 +184,8 @@ pub enum TokenKind {
     Class,
     #[token("type")]
     Type,
+    #[token("typeof")]
+    Typeof,
     #[token("export")]
     Export,
     #[token("import")]
@@ -255,6 +258,8 @@ pub enum TokenKind {
     Dot,
     #[token("?")]
     Question,
+    #[token("?.")]
+    QuestionDot,
     #[token("=>")]
     Arrow,
     #[token("|")]
@@ -311,6 +316,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Interface => "'interface'",
             TokenKind::Class => "'class'",
             TokenKind::Type => "'type'",
+            TokenKind::Typeof => "'typeof'",
             TokenKind::Export => "'export'",
             TokenKind::Import => "'import'",
             TokenKind::Console => "'console'",
@@ -344,6 +350,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Colon => "':'",
             TokenKind::Dot => "'.'",
             TokenKind::Question => "'?'",
+            TokenKind::QuestionDot => "'?.'",
             TokenKind::Arrow => "'=>'",
             TokenKind::Pipe => "'|'",
             TokenKind::Ampersand => "'&'",
@@ -485,6 +492,7 @@ pub fn is_keyword(s: &str) -> bool {
             | "interface"
             | "class"
             | "type"
+            | "typeof"
             | "export"
             | "import"
             | "console"

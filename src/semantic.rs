@@ -643,6 +643,10 @@ impl SemanticAnalyzer {
                             ));
                         }
                     }
+                    UnaryOperator::Typeof => {
+                        // typeof always returns string
+                        Type::String
+                    }
                 };
 
                 Ok(TypedExpression {
@@ -853,6 +857,184 @@ impl SemanticAnalyzer {
                     type_info: Type::Object(object_type_fields),
                     operand_types: None,
                 })
+            }
+
+            Expression::MemberAccess {
+                object,
+                property,
+                optional,
+                location,
+            } => {
+                let typed_object = self.analyze_expression(*object)?;
+
+                match &typed_object.type_info {
+                    Type::Object(fields) => {
+                        if let Some(field_type) = fields.get(&property) {
+                            let result_type = if optional {
+                                // For optional chaining, result can be the field type or undefined
+                                Type::Union(vec![field_type.clone(), Type::Undefined])
+                            } else {
+                                field_type.clone()
+                            };
+
+                            Ok(TypedExpression {
+                                expression: Expression::MemberAccess {
+                                    object: Box::new(typed_object.expression),
+                                    property,
+                                    optional,
+                                    location,
+                                },
+                                type_info: result_type,
+                                operand_types: None,
+                            })
+                        } else if optional {
+                            // Optional chaining on non-existent property returns undefined
+                            Ok(TypedExpression {
+                                expression: Expression::MemberAccess {
+                                    object: Box::new(typed_object.expression),
+                                    property,
+                                    optional,
+                                    location,
+                                },
+                                type_info: Type::Undefined,
+                                operand_types: None,
+                            })
+                        } else {
+                            Err(DrafError::semantic_error(
+                                location.line,
+                                location.column,
+                                format!("Property '{}' does not exist on type", property),
+                            ))
+                        }
+                    }
+                    Type::Interface { name, .. } => {
+                        // For now, assume interface properties exist
+                        // TODO: Implement proper interface lookup from typing context
+                        let result_type = if optional {
+                            Type::Union(vec![Type::Any, Type::Undefined])
+                        } else {
+                            Type::Any
+                        };
+
+                        Ok(TypedExpression {
+                            expression: Expression::MemberAccess {
+                                object: Box::new(typed_object.expression),
+                                property,
+                                optional,
+                                location,
+                            },
+                            type_info: result_type,
+                            operand_types: None,
+                        })
+                    }
+                    _ => {
+                        if optional {
+                            // Optional chaining on non-object types returns undefined
+                            Ok(TypedExpression {
+                                expression: Expression::MemberAccess {
+                                    object: Box::new(typed_object.expression),
+                                    property,
+                                    optional,
+                                    location,
+                                },
+                                type_info: Type::Undefined,
+                                operand_types: None,
+                            })
+                        } else {
+                            Err(DrafError::semantic_error(
+                                location.line,
+                                location.column,
+                                format!(
+                                    "Cannot access property '{}' on type '{:?}'",
+                                    property, typed_object.type_info
+                                ),
+                            ))
+                        }
+                    }
+                }
+            }
+
+            Expression::ArrayAccess {
+                array,
+                index,
+                optional,
+                location,
+            } => {
+                let typed_array = self.analyze_expression(*array)?;
+                let typed_index = self.analyze_expression(*index)?;
+
+                // Check if index is valid (number or string)
+                match &typed_index.type_info {
+                    Type::Number | Type::String => {
+                        match &typed_array.type_info {
+                            Type::Array(element_type) => {
+                                let result_type = if optional {
+                                    Type::Union(vec![(**element_type).clone(), Type::Undefined])
+                                } else {
+                                    (**element_type).clone()
+                                };
+
+                                Ok(TypedExpression {
+                                    expression: Expression::ArrayAccess {
+                                        array: Box::new(typed_array.expression),
+                                        index: Box::new(typed_index.expression),
+                                        optional,
+                                        location,
+                                    },
+                                    type_info: result_type,
+                                    operand_types: None,
+                                })
+                            }
+                            Type::Object(_) => {
+                                // Object bracket access - treat like member access
+                                let result_type = if optional {
+                                    Type::Union(vec![Type::Any, Type::Undefined])
+                                } else {
+                                    Type::Any
+                                };
+
+                                Ok(TypedExpression {
+                                    expression: Expression::ArrayAccess {
+                                        array: Box::new(typed_array.expression),
+                                        index: Box::new(typed_index.expression),
+                                        optional,
+                                        location,
+                                    },
+                                    type_info: result_type,
+                                    operand_types: None,
+                                })
+                            }
+                            _ => {
+                                if optional {
+                                    Ok(TypedExpression {
+                                        expression: Expression::ArrayAccess {
+                                            array: Box::new(typed_array.expression),
+                                            index: Box::new(typed_index.expression),
+                                            optional,
+                                            location,
+                                        },
+                                        type_info: Type::Undefined,
+                                        operand_types: None,
+                                    })
+                                } else {
+                                    Err(DrafError::semantic_error(
+                                        location.line,
+                                        location.column,
+                                        format!(
+                                            "Cannot index into type '{:?}'",
+                                            typed_array.type_info
+                                        ),
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                    _ => Err(DrafError::semantic_error(
+                        location.line,
+                        location.column,
+                        "Array index must be a number or string",
+                    )),
+                }
             }
 
             _ => Err(DrafError::semantic_error(

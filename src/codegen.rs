@@ -32,6 +32,8 @@ pub struct CodeGenerator<'ctx> {
     variables: HashMap<String, PointerValue<'ctx>>,
     /// Type information for variables
     variable_types: HashMap<String, Type>,
+    /// Object field layouts for struct types
+    object_layouts: HashMap<String, Vec<String>>,
     /// Current function being generated
     current_function: Option<FunctionValue<'ctx>>,
     /// Printf function for console output
@@ -61,6 +63,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             builder,
             variables: HashMap::new(),
             variable_types: HashMap::new(),
+            object_layouts: HashMap::new(),
             current_function: None,
             printf_function: None,
             loop_stack: Vec::new(),
@@ -114,22 +117,82 @@ impl<'ctx> CodeGenerator<'ctx> {
         match statement {
             TypedStatement::VariableDeclaration {
                 name,
-                initializer,
                 inferred_type,
-                location: _,
+                initializer,
                 ..
             } => {
-                let llvm_type = self.type_to_llvm_type(&inferred_type)?;
-
-                // Allocate space for the variable
-                let alloca = self.builder.build_alloca(llvm_type, &name).unwrap();
-                self.variables.insert(name.clone(), alloca);
-                self.variable_types.insert(name.clone(), inferred_type);
-
-                // Generate initializer if present
+                // Generate initializer first to potentially get better type info
                 if let Some(init_expr) = initializer {
-                    let init_value = self.generate_expression(init_expr)?;
-                    self.builder.build_store(alloca, init_value).unwrap();
+                    // Check if this is an object literal initialization
+                    if let Expression::Object { fields, .. } = &init_expr.expression {
+                        // For object literals, create the struct type based on the actual fields
+                        let field_names: Vec<String> =
+                            fields.iter().map(|f| f.key.clone()).collect();
+                        let field_types: Vec<_> = fields
+                            .iter()
+                            .map(|f| self.infer_expression_type(&f.value).unwrap_or(Type::Any))
+                            .collect();
+
+                        // Create LLVM types for the fields
+                        let mut llvm_field_types = Vec::new();
+                        for field_type in &field_types {
+                            llvm_field_types.push(self.type_to_llvm_type(field_type)?);
+                        }
+
+                        // Create the struct type
+                        let struct_type = self.context.struct_type(&llvm_field_types, false);
+
+                        // Allocate space for the struct
+                        let alloca = self.builder.build_alloca(struct_type, &name).unwrap();
+                        self.variables.insert(name.clone(), alloca);
+
+                        // Create object type for tracking
+                        let mut object_fields = std::collections::HashMap::new();
+                        for (i, field) in fields.iter().enumerate() {
+                            object_fields.insert(field.key.clone(), field_types[i].clone());
+                        }
+                        let object_type = Type::Object(object_fields);
+                        self.variable_types.insert(name.clone(), object_type);
+                        self.object_layouts.insert(name.clone(), field_names);
+
+                        // Generate and store each field
+                        for (i, field) in fields.iter().enumerate() {
+                            let typed_field_value =
+                                TypedExpression::new(field.value.clone(), field_types[i].clone());
+                            let field_value = self.generate_expression(typed_field_value)?;
+
+                            // Get pointer to field using GEP
+                            let field_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    struct_type,
+                                    alloca,
+                                    i as u32,
+                                    &format!("field_{}", field.key),
+                                )
+                                .unwrap();
+
+                            // Store the value in the field
+                            self.builder.build_store(field_ptr, field_value).unwrap();
+                        }
+                    } else {
+                        // Regular non-object initialization
+                        let llvm_type = self.type_to_llvm_type(&inferred_type)?;
+                        let alloca = self.builder.build_alloca(llvm_type, &name).unwrap();
+                        self.variables.insert(name.clone(), alloca);
+                        self.variable_types
+                            .insert(name.clone(), inferred_type.clone());
+
+                        let init_value = self.generate_expression(init_expr)?;
+                        self.builder.build_store(alloca, init_value).unwrap();
+                    }
+                } else {
+                    // No initializer, just allocate space
+                    let llvm_type = self.type_to_llvm_type(&inferred_type)?;
+                    let alloca = self.builder.build_alloca(llvm_type, &name).unwrap();
+                    self.variables.insert(name.clone(), alloca);
+                    self.variable_types
+                        .insert(name.clone(), inferred_type.clone());
                 }
 
                 Ok(())
@@ -660,6 +723,27 @@ impl<'ctx> CodeGenerator<'ctx> {
             Expression::Unary {
                 operator, operand, ..
             } => {
+                // Handle typeof operator specially - it always returns a string
+                if let UnaryOperator::Typeof = operator {
+                    // For typeof, we need to infer the operand type
+                    let operand_type = self.infer_expression_type(&operand)?;
+
+                    let type_string = match operand_type {
+                        Type::Number => "number",
+                        Type::String => "string",
+                        Type::Boolean => "boolean",
+                        Type::Object(_) | Type::Interface { .. } => "object",
+                        Type::Array(_) => "object",
+                        Type::Function { .. } => "function",
+                        Type::Null => "object", // In JS, typeof null === "object"
+                        Type::Undefined => "undefined",
+                        _ => "object",
+                    };
+
+                    let global_string = self.create_format_string(type_string);
+                    return Ok(global_string.into());
+                }
+
                 let typed_operand = TypedExpression::new(*operand, expr.type_info.clone());
                 let operand_val = self.generate_expression(typed_operand)?;
 
@@ -671,6 +755,11 @@ impl<'ctx> CodeGenerator<'ctx> {
                                 self.builder.build_float_neg(float_val, "neg").unwrap()
                             }
                             UnaryOperator::Plus => float_val, // No-op for plus
+                            UnaryOperator::Typeof => {
+                                return Err(DrafError::codegen_error(
+                                    "typeof should have been handled above".to_string(),
+                                ));
+                            }
                             _ => {
                                 return Err(DrafError::codegen_error(format!(
                                     "Unary operator {:?} not implemented for numbers",
@@ -685,6 +774,11 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let result = match operator {
                             UnaryOperator::LogicalNot => {
                                 self.builder.build_not(bool_val, "not").unwrap()
+                            }
+                            UnaryOperator::Typeof => {
+                                return Err(DrafError::codegen_error(
+                                    "typeof should have been handled above".to_string(),
+                                ));
                             }
                             _ => {
                                 return Err(DrafError::codegen_error(format!(
@@ -790,11 +884,189 @@ impl<'ctx> CodeGenerator<'ctx> {
 
             Expression::TemplateLiteral { parts, .. } => self.generate_template_literal(&parts),
 
-            Expression::Object { fields, .. } => {
-                // For now, object literals are not fully implemented in codegen
-                // Return a dummy value to allow compilation
-                // TODO: Implement proper struct/object codegen
+            Expression::Object { .. } => {
+                // Object literals are now handled in variable declarations
+                // For standalone object expressions, return a placeholder
+                // TODO: Implement standalone object expressions if needed
                 Ok(self.context.i32_type().const_int(0, false).into())
+            }
+
+            Expression::MemberAccess {
+                object,
+                property,
+                optional,
+                ..
+            } => {
+                // Handle member access on objects with proper struct GEP
+                match &object.as_ref() {
+                    Expression::Identifier { name, .. } => {
+                        // Check if this is an object variable we know about
+                        if let (Some(object_ptr), Some(object_type)) = (
+                            self.variables.get(name.as_str()),
+                            self.variable_types.get(name.as_str()),
+                        ) {
+                            match object_type {
+                                Type::Object(fields) => {
+                                    // Use the stored field layout to get correct order
+                                    if let Some(field_layout) =
+                                        self.object_layouts.get(name.as_str())
+                                    {
+                                        if let Some(field_index) =
+                                            field_layout.iter().position(|k| k == &property)
+                                        {
+                                            // Get the field type for LLVM type generation
+                                            let field_type = fields.get(&property).unwrap();
+                                            let llvm_field_type =
+                                                self.type_to_llvm_type(field_type)?;
+
+                                            // Create field types for the struct using stored layout order
+                                            let mut struct_field_types = Vec::new();
+                                            for field_name in field_layout {
+                                                let field_type = fields.get(field_name).unwrap();
+                                                struct_field_types
+                                                    .push(self.type_to_llvm_type(field_type)?);
+                                            }
+                                            let struct_type = self
+                                                .context
+                                                .struct_type(&struct_field_types, false);
+
+                                            // Use GEP to get pointer to the field
+                                            let field_ptr = self
+                                                .builder
+                                                .build_struct_gep(
+                                                    struct_type,
+                                                    *object_ptr,
+                                                    field_index as u32,
+                                                    &format!("field_{}", property),
+                                                )
+                                                .unwrap();
+
+                                            // Load the field value
+                                            let field_value = self
+                                                .builder
+                                                .build_load(
+                                                    llvm_field_type,
+                                                    field_ptr,
+                                                    &format!("load_{}", property),
+                                                )
+                                                .unwrap();
+
+                                            return Ok(field_value);
+                                        } else if optional {
+                                            // No layout found, return error
+                                            return Err(DrafError::codegen_error(format!(
+                                                "No layout found for object '{}'",
+                                                name
+                                            )));
+                                        }
+                                    } else if optional {
+                                        // Property doesn't exist, return undefined for optional access
+                                        return Ok(self
+                                            .context
+                                            .ptr_type(AddressSpace::default())
+                                            .const_null()
+                                            .into());
+                                    } else {
+                                        return Err(DrafError::codegen_error(format!(
+                                            "Property '{}' not found on object",
+                                            property
+                                        )));
+                                    }
+                                }
+                                _ => {
+                                    // Not an object type, fallback to dummy values
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // Complex object expression, generate it first
+                        let typed_object = TypedExpression::new(object.as_ref().clone(), Type::Any);
+                        let _object_val = self.generate_expression(typed_object)?;
+                        // For complex expressions, fall back to dummy values for now
+                    }
+                }
+
+                // Fallback for non-struct member access (when we can't resolve the layout)
+                if optional {
+                    // For optional chaining, return appropriate dummy value
+                    match &expr.type_info {
+                        Type::Number => Ok(self.context.f64_type().const_float(0.0).into()),
+                        Type::String => {
+                            let global_string = self.create_format_string("");
+                            Ok(global_string.into())
+                        }
+                        Type::Boolean => Ok(self.context.bool_type().const_int(0, false).into()),
+                        _ => Ok(self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .const_null()
+                            .into()),
+                    }
+                } else {
+                    // Regular member access fallback
+                    match &expr.type_info {
+                        Type::Number => Ok(self.context.f64_type().const_float(0.0).into()),
+                        Type::String => {
+                            let global_string = self.create_format_string("");
+                            Ok(global_string.into())
+                        }
+                        Type::Boolean => Ok(self.context.bool_type().const_int(0, false).into()),
+                        _ => Ok(self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .const_null()
+                            .into()),
+                    }
+                }
+            }
+
+            Expression::ArrayAccess {
+                array,
+                index,
+                optional,
+                ..
+            } => {
+                // For now, implement basic array access as dummy values
+                // TODO: Implement proper array indexing
+                let typed_array = TypedExpression::new(*array, Type::Any);
+                let _array_val = self.generate_expression(typed_array)?;
+
+                let typed_index = TypedExpression::new(*index, Type::Any);
+                let _index_val = self.generate_expression(typed_index)?;
+
+                if optional {
+                    // For optional bracket access, we should generate bounds/null checks
+                    // For now, return a dummy value based on result type
+                    match &expr.type_info {
+                        Type::Number => Ok(self.context.f64_type().const_float(0.0).into()),
+                        Type::String => {
+                            let global_string = self.create_format_string("");
+                            Ok(global_string.into())
+                        }
+                        Type::Boolean => Ok(self.context.bool_type().const_int(0, false).into()),
+                        _ => Ok(self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .const_null()
+                            .into()),
+                    }
+                } else {
+                    // Regular array access
+                    match &expr.type_info {
+                        Type::Number => Ok(self.context.f64_type().const_float(0.0).into()),
+                        Type::String => {
+                            let global_string = self.create_format_string("");
+                            Ok(global_string.into())
+                        }
+                        Type::Boolean => Ok(self.context.bool_type().const_int(0, false).into()),
+                        _ => Ok(self
+                            .context
+                            .ptr_type(AddressSpace::default())
+                            .const_null()
+                            .into()),
+                    }
+                }
             }
 
             _ => Err(DrafError::codegen_error(
@@ -830,6 +1102,18 @@ impl<'ctx> CodeGenerator<'ctx> {
             Type::Interface { .. } => {
                 // For now, represent interfaces as generic pointers
                 // TODO: Implement proper interface types
+                Ok(self.context.ptr_type(AddressSpace::default()).into())
+            }
+            Type::Union(types) => {
+                // For union types, use the first non-undefined/null type as the base
+                // TODO: Implement proper tagged union types
+                for ty in types {
+                    match ty {
+                        Type::Undefined | Type::Null => continue,
+                        _ => return self.type_to_llvm_type(ty),
+                    }
+                }
+                // If all types are null/undefined, use pointer type
                 Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
             _ => Err(DrafError::codegen_error(format!(
@@ -1072,12 +1356,19 @@ impl<'ctx> CodeGenerator<'ctx> {
                 operator: UnaryOperator::LogicalNot,
                 ..
             } => Ok(Type::Boolean),
+            Expression::Unary {
+                operator: UnaryOperator::Typeof,
+                ..
+            } => Ok(Type::String),
             Expression::Unary { .. } => Ok(Type::Number),
             Expression::Conditional { then_expr, .. } => {
                 // For simplicity, use the type of the then branch
                 self.infer_expression_type(then_expr)
             }
             Expression::TemplateLiteral { .. } => Ok(Type::String),
+            Expression::MemberAccess { .. } => Ok(Type::Any), // Could be any type
+            Expression::ArrayAccess { .. } => Ok(Type::Any),  // Could be any type
+            Expression::Object { .. } => Ok(Type::Object(std::collections::HashMap::new())),
             _ => Ok(Type::Number), // Default fallback
         }
     }

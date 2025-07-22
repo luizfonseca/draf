@@ -39,6 +39,11 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Peek at the next token without consuming it
+    fn peek(&mut self) -> Option<&'a Token> {
+        self.tokens.peek().copied()
+    }
+
     /// Consume current token if it matches expected kind
     fn consume(&mut self, kind: TokenKind, message: &str) -> DrafResult<&'a Token> {
         if let Some(token) = self.current_token {
@@ -997,7 +1002,8 @@ impl<'a> Parser<'a> {
                 TokenKind::Bang => UnaryOperator::LogicalNot,
                 TokenKind::Minus => UnaryOperator::Minus,
                 TokenKind::Plus => UnaryOperator::Plus,
-                _ => return self.parse_primary(),
+                TokenKind::Typeof => UnaryOperator::Typeof,
+                _ => return self.parse_postfix(),
             };
 
             let location = self.current_location();
@@ -1010,7 +1016,100 @@ impl<'a> Parser<'a> {
             });
         }
 
-        self.parse_primary()
+        self.parse_postfix()
+    }
+
+    /// Parse postfix expression (member access, array access, function calls)
+    fn parse_postfix(&mut self) -> DrafResult<Expression> {
+        let mut expr = self.parse_primary()?;
+
+        loop {
+            if let Some(token) = self.current_token {
+                match token.kind {
+                    // Regular member access: obj.property
+                    TokenKind::Dot => {
+                        let location = self.current_location();
+                        self.advance(); // consume '.'
+
+                        let property_token = self
+                            .consume(TokenKind::Identifier, "Expected property name after '.'")?;
+
+                        expr = Expression::MemberAccess {
+                            object: Box::new(expr),
+                            property: property_token.lexeme.clone(),
+                            optional: false,
+                            location,
+                        };
+                    }
+
+                    // Optional chaining: obj?.property
+                    TokenKind::QuestionDot => {
+                        let location = self.current_location();
+                        self.advance(); // consume '?.'
+
+                        let property_token = self
+                            .consume(TokenKind::Identifier, "Expected property name after '?.'")?;
+
+                        expr = Expression::MemberAccess {
+                            object: Box::new(expr),
+                            property: property_token.lexeme.clone(),
+                            optional: true,
+                            location,
+                        };
+                    }
+
+                    // Array/bracket access: obj[index] or obj?.[index]
+                    TokenKind::LeftBracket => {
+                        let location = self.current_location();
+                        self.advance(); // consume '['
+
+                        let index = self.parse_expression()?;
+                        self.consume(TokenKind::RightBracket, "Expected ']' after array index")?;
+
+                        expr = Expression::ArrayAccess {
+                            array: Box::new(expr),
+                            index: Box::new(index),
+                            optional: false,
+                            location,
+                        };
+                    }
+
+                    // Optional bracket access: obj?.[index]
+                    TokenKind::Question => {
+                        // Look ahead to see if it's optional bracket access
+                        if let Some(next_token) = self.peek() {
+                            if next_token.kind == TokenKind::LeftBracket {
+                                let location = self.current_location();
+                                self.advance(); // consume '?'
+                                self.advance(); // consume '['
+
+                                let index = self.parse_expression()?;
+                                self.consume(
+                                    TokenKind::RightBracket,
+                                    "Expected ']' after array index",
+                                )?;
+
+                                expr = Expression::ArrayAccess {
+                                    array: Box::new(expr),
+                                    index: Box::new(index),
+                                    optional: true,
+                                    location,
+                                };
+                                continue;
+                            }
+                        }
+                        // Not optional bracket access, break out of loop
+                        break;
+                    }
+
+                    _ => break,
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
     }
 
     /// Parse primary expression
