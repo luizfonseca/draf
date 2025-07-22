@@ -2,6 +2,10 @@
 
 A compiler for a strongly typed variant of TypeScript, targeting LLVM for high-performance native code generation.
 
+## Requirements
+- LLVM@18 (`brew install llvm@18`)
+- Rust (latest stable version)
+- TypeScript (for testing)
 
 ## Running TS tests
 To run specific tests in the `tests` directory, use the following command:
