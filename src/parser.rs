@@ -142,6 +142,12 @@ impl<'a> Parser<'a> {
 
         let initializer = if self.check(&TokenKind::Equal) {
             self.advance(); // consume '='
+
+            // Skip any newlines after the assignment operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             Some(self.parse_expression()?)
         } else {
             None
@@ -307,6 +313,12 @@ impl<'a> Parser<'a> {
         if self.check(&TokenKind::Equal) {
             let location = self.current_location();
             self.advance();
+
+            // Skip any newlines after the assignment operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let value = self.parse_assignment()?;
             return Ok(Expression::Assignment {
                 target: Box::new(expr),
@@ -325,8 +337,20 @@ impl<'a> Parser<'a> {
         if self.check(&TokenKind::Question) {
             let location = self.current_location();
             self.advance(); // consume '?'
+
+            // Skip any newlines after the '?' operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let then_expr = self.parse_expression()?;
             self.consume(TokenKind::Colon, "Expected ':' in ternary expression")?;
+
+            // Skip any newlines after the ':' operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let else_expr = self.parse_ternary()?;
             return Ok(Expression::Conditional {
                 condition: Box::new(expr),
@@ -346,6 +370,12 @@ impl<'a> Parser<'a> {
         while self.check(&TokenKind::OrOr) {
             let location = self.current_location();
             self.advance();
+
+            // Skip any newlines after the operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let right = self.parse_nullish_coalescing()?;
             expr = Expression::Binary {
                 left: Box::new(expr),
@@ -365,6 +395,12 @@ impl<'a> Parser<'a> {
         while self.check(&TokenKind::NullishCoalescing) {
             let location = self.current_location();
             self.advance();
+
+            // Skip any newlines after the operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let right = self.parse_logical_and()?;
             expr = Expression::Binary {
                 left: Box::new(expr),
@@ -384,6 +420,12 @@ impl<'a> Parser<'a> {
         while self.check(&TokenKind::AndAnd) {
             let location = self.current_location();
             self.advance();
+
+            // Skip any newlines after the operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let right = self.parse_equality()?;
             expr = Expression::Binary {
                 left: Box::new(expr),
@@ -411,6 +453,12 @@ impl<'a> Parser<'a> {
 
             let location = self.current_location();
             self.advance();
+
+            // Skip any newlines after the operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let right = self.parse_comparison()?;
             expr = Expression::Binary {
                 left: Box::new(expr),
@@ -438,6 +486,12 @@ impl<'a> Parser<'a> {
 
             let location = self.current_location();
             self.advance();
+
+            // Skip any newlines after the operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let right = self.parse_term()?;
             expr = Expression::Binary {
                 left: Box::new(expr),
@@ -463,6 +517,12 @@ impl<'a> Parser<'a> {
 
             let location = self.current_location();
             self.advance();
+
+            // Skip any newlines after the operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let right = self.parse_factor()?;
             expr = Expression::Binary {
                 left: Box::new(expr),
@@ -489,6 +549,12 @@ impl<'a> Parser<'a> {
 
             let location = self.current_location();
             self.advance();
+
+            // Skip any newlines after the operator
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
             let right = self.parse_unary()?;
             expr = Expression::Binary {
                 left: Box::new(expr),
