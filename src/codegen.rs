@@ -790,6 +790,13 @@ impl<'ctx> CodeGenerator<'ctx> {
 
             Expression::TemplateLiteral { parts, .. } => self.generate_template_literal(&parts),
 
+            Expression::Object { fields, .. } => {
+                // For now, object literals are not fully implemented in codegen
+                // Return a dummy value to allow compilation
+                // TODO: Implement proper struct/object codegen
+                Ok(self.context.i32_type().const_int(0, false).into())
+            }
+
             _ => Err(DrafError::codegen_error(
                 "Expression type not yet implemented in codegen",
             )),
@@ -815,6 +822,16 @@ impl<'ctx> CodeGenerator<'ctx> {
             Type::Never => Err(DrafError::codegen_error(
                 "Never type cannot be instantiated",
             )),
+            Type::Object(_) => {
+                // For now, represent objects as generic pointers
+                // TODO: Implement proper struct types for objects
+                Ok(self.context.ptr_type(AddressSpace::default()).into())
+            }
+            Type::Interface { .. } => {
+                // For now, represent interfaces as generic pointers
+                // TODO: Implement proper interface types
+                Ok(self.context.ptr_type(AddressSpace::default()).into())
+            }
             _ => Err(DrafError::codegen_error(format!(
                 "Type not yet implemented in codegen: {}",
                 ty

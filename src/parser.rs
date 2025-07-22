@@ -1181,6 +1181,10 @@ impl<'a> Parser<'a> {
                     self.consume(TokenKind::RightParen, "Expected ')' after expression")?;
                     Ok(expr)
                 }
+                TokenKind::LeftBrace => {
+                    // Object literal { key: value, ... }
+                    self.parse_object_literal()
+                }
                 _ => Err(DrafError::parse_error(
                     token.line,
                     token.column,
@@ -1194,6 +1198,99 @@ impl<'a> Parser<'a> {
                 "Unexpected end of file in expression",
             ))
         }
+    }
+
+    /// Parse object literal { key: value, ... }
+    fn parse_object_literal(&mut self) -> DrafResult<Expression> {
+        let location = self.current_location();
+        self.advance(); // consume '{'
+
+        // Skip newlines after opening brace
+        while self.check(&TokenKind::Newline) {
+            self.advance();
+        }
+
+        let mut fields = Vec::new();
+
+        while !self.check(&TokenKind::RightBrace) && !self.is_at_end() {
+            // Skip newlines before field
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            // Break if we hit the closing brace after skipping newlines
+            if self.check(&TokenKind::RightBrace) {
+                break;
+            }
+
+            let field_location = self.current_location();
+
+            // Parse field name (identifier or string literal)
+            let key = if let Some(token) = self.current_token {
+                match &token.kind {
+                    TokenKind::Identifier => {
+                        let name = token.lexeme.clone();
+                        self.advance();
+                        name
+                    }
+                    TokenKind::StringLiteralDouble | TokenKind::StringLiteralSingle => {
+                        let name = token.lexeme.clone();
+                        self.advance();
+                        // Remove quotes from string literal
+                        name.trim_matches('"').trim_matches('\'').to_string()
+                    }
+                    _ => {
+                        return Err(DrafError::parse_error(
+                            token.line,
+                            token.column,
+                            "Expected field name in object literal",
+                        ));
+                    }
+                }
+            } else {
+                return Err(DrafError::parse_error(
+                    field_location.line,
+                    field_location.column,
+                    "Expected field name in object literal",
+                ));
+            };
+
+            self.consume(TokenKind::Colon, "Expected ':' after field name")?;
+
+            // Skip newlines after colon
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            let value = self.parse_expression()?;
+
+            fields.push(ObjectField::new(key, value, field_location));
+
+            // Skip newlines after field value
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            // Check for comma or end
+            if self.check(&TokenKind::Comma) {
+                self.advance(); // consume ','
+
+                // Skip newlines after comma
+                while self.check(&TokenKind::Newline) {
+                    self.advance();
+                }
+            } else {
+                // No comma, skip any newlines before closing brace
+                while self.check(&TokenKind::Newline) {
+                    self.advance();
+                }
+                break;
+            }
+        }
+
+        self.consume(TokenKind::RightBrace, "Expected '}' after object literal")?;
+
+        Ok(Expression::Object { fields, location })
     }
 
     /// Parse type annotation

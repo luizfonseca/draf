@@ -159,19 +159,47 @@ impl Type {
                 })
             }
 
-            // Interface compatibility
+            // Interface compatibility - object to interface
             (
                 Type::Object(fields),
                 Type::Interface {
                     fields: interface_fields,
                     ..
                 },
-            ) => interface_fields.iter().all(|(field_name, target_type)| {
-                fields
-                    .get(field_name)
-                    .map(|source_type| source_type.is_assignable_to(target_type))
-                    .unwrap_or(false)
-            }),
+            ) => {
+                // Check that object has all required interface fields with compatible types
+                interface_fields.iter().all(|(field_name, target_type)| {
+                    fields
+                        .get(field_name)
+                        .map(|source_type| source_type.is_assignable_to(target_type))
+                        .unwrap_or(false)
+                })
+            }
+
+            // Interface to interface compatibility (inheritance)
+            (
+                Type::Interface {
+                    name: source_name,
+                    fields: source_fields,
+                },
+                Type::Interface {
+                    name: target_name,
+                    fields: target_fields,
+                },
+            ) => {
+                // Same interface is assignable
+                if source_name == target_name {
+                    return true;
+                }
+
+                // Check structural compatibility - source must have all target fields
+                target_fields.iter().all(|(field_name, target_type)| {
+                    source_fields
+                        .get(field_name)
+                        .map(|source_type| source_type.is_assignable_to(target_type))
+                        .unwrap_or(false)
+                })
+            }
 
             // Type alias resolution
             (_, Type::Alias { target, .. }) => self.is_assignable_to(target),

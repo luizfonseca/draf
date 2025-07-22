@@ -81,7 +81,7 @@ impl SemanticAnalyzer {
                 location,
             } => {
                 let declared_type = if let Some(type_ann) = &type_annotation {
-                    Some(type_ann.to_type())
+                    Some(self.resolve_type_annotation(type_ann)?)
                 } else {
                     None
                 };
@@ -471,6 +471,58 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// Resolve a type annotation to a concrete type, including interface lookups
+    fn resolve_type_annotation(&self, type_annotation: &TypeAnnotation) -> DrafResult<Type> {
+        match type_annotation {
+            TypeAnnotation::Named { name, .. } => {
+                // Check if it's an interface first
+                if let Some(interface) = self.typing_context.get_interface(name) {
+                    let mut fields = HashMap::new();
+                    // Collect all fields including inherited ones
+                    if let Ok(all_fields) = self.typing_context.get_all_interface_fields(name) {
+                        for field in all_fields {
+                            let field_type = self.resolve_type_annotation(&field.field_type)?;
+                            fields.insert(field.name, field_type);
+                        }
+                    }
+                    return Ok(Type::Interface {
+                        name: name.clone(),
+                        fields,
+                    });
+                }
+
+                // Check if it's a type alias
+                if let Some(type_alias) = self.typing_context.get_type_alias(name) {
+                    return self.resolve_type_annotation(&type_alias.target_type);
+                }
+
+                // Fallback to basic type conversion
+                Ok(type_annotation.to_type())
+            }
+            TypeAnnotation::Array { element_type, .. } => {
+                let resolved_element = self.resolve_type_annotation(element_type)?;
+                Ok(Type::Array(Box::new(resolved_element)))
+            }
+            TypeAnnotation::Union { types, .. } => {
+                let mut resolved_types = Vec::new();
+                for type_ann in types {
+                    resolved_types.push(self.resolve_type_annotation(type_ann)?);
+                }
+                Ok(Type::Union(resolved_types))
+            }
+            TypeAnnotation::Object { fields, .. } => {
+                let mut resolved_fields = HashMap::new();
+                for field in fields {
+                    let resolved_type = self.resolve_type_annotation(&field.field_type)?;
+                    resolved_fields.insert(field.name.clone(), resolved_type);
+                }
+                Ok(Type::Object(resolved_fields))
+            }
+            // For all other types, use the default conversion
+            _ => Ok(type_annotation.to_type()),
+        }
+    }
+
     /// Analyze an expression and return typed expression
     fn analyze_expression(&mut self, expression: Expression) -> DrafResult<TypedExpression> {
         match expression {
@@ -768,6 +820,41 @@ impl SemanticAnalyzer {
             }
 
             // Placeholder for other expression types
+            Expression::Object { fields, location } => {
+                let mut typed_fields = Vec::new();
+                let mut object_type_fields = HashMap::new();
+
+                for field in fields {
+                    let typed_value = self.analyze_expression(field.value)?;
+                    let field_type = typed_value.type_info.clone();
+
+                    // Check for duplicate field names
+                    if object_type_fields.contains_key(&field.key) {
+                        return Err(DrafError::semantic_error(
+                            field.location.line,
+                            field.location.column,
+                            format!("Duplicate field '{}' in object literal", field.key),
+                        ));
+                    }
+
+                    object_type_fields.insert(field.key.clone(), field_type);
+                    typed_fields.push(ObjectField::new(
+                        field.key,
+                        typed_value.expression,
+                        field.location,
+                    ));
+                }
+
+                Ok(TypedExpression {
+                    expression: Expression::Object {
+                        fields: typed_fields,
+                        location,
+                    },
+                    type_info: Type::Object(object_type_fields),
+                    operand_types: None,
+                })
+            }
+
             _ => Err(DrafError::semantic_error(
                 expression.location().line,
                 expression.location().column,
