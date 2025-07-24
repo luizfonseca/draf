@@ -1040,6 +1040,34 @@ impl SemanticAnalyzer {
                             operand_types: None,
                         })
                     }
+                    Type::Array(_) => {
+                        // Handle array properties
+                        let result_type = match property.as_str() {
+                            "length" => Type::Number,
+                            _ => {
+                                if optional {
+                                    Type::Undefined
+                                } else {
+                                    return Err(DrafError::semantic_error(
+                                        location.line,
+                                        location.column,
+                                        format!("Property '{}' does not exist on arrays", property),
+                                    ));
+                                }
+                            }
+                        };
+
+                        Ok(TypedExpression {
+                            expression: Expression::MemberAccess {
+                                object: Box::new(typed_object.expression),
+                                property,
+                                optional,
+                                location,
+                            },
+                            type_info: result_type,
+                            operand_types: None,
+                        })
+                    }
                     _ => {
                         if optional {
                             // Optional chaining on non-object types returns undefined
@@ -1222,14 +1250,12 @@ impl SemanticAnalyzer {
                             }
                         } else {
                             // Check if the object has a type that supports this method
-                            // For now, assume instance method calls return Any
-                            Type::Any
+                            self.resolve_instance_method_type(&typed_object.type_info, &method)
                         }
                     }
                     _ => {
-                        // For other expressions, try to resolve instance methods
-                        // This could be enhanced to check object types
-                        Type::Any
+                        // For other expressions, try to resolve instance methods based on object type
+                        self.resolve_instance_method_type(&typed_object.type_info, &method)
                     }
                 };
 
@@ -1287,6 +1313,45 @@ impl SemanticAnalyzer {
                 expression.location().column,
                 "Expression type not yet implemented in semantic analysis",
             )),
+        }
+    }
+
+    /// Resolve the return type of an instance method call based on object type
+    fn resolve_instance_method_type(&self, object_type: &Type, method_name: &str) -> Type {
+        match object_type {
+            Type::Array(_) => {
+                // Check if this is a known array instance method
+                if let Some(array_global) = self.globals.get_global("Array") {
+                    if let Some(method) = array_global.instance_methods.get(method_name) {
+                        return method.return_type.clone();
+                    }
+                }
+                // Unknown array method, return Any
+                Type::Any
+            }
+            Type::String => {
+                // String instance methods would go here
+                match method_name {
+                    "charAt" | "substring" | "slice" | "toLowerCase" | "toUpperCase" => {
+                        Type::String
+                    }
+                    "indexOf" | "lastIndexOf" | "length" => Type::Number,
+                    "includes" | "startsWith" | "endsWith" => Type::Boolean,
+                    _ => Type::Any,
+                }
+            }
+            Type::Object(_) => {
+                // Object instance methods
+                match method_name {
+                    "toString" | "valueOf" => Type::String,
+                    "hasOwnProperty" => Type::Boolean,
+                    _ => Type::Any,
+                }
+            }
+            _ => {
+                // For other types, assume Any for now
+                Type::Any
+            }
         }
     }
 }
