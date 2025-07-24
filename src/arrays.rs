@@ -64,6 +64,16 @@ pub fn create_array_global() -> GlobalObject {
     instance_methods.insert("unshift".to_string(), create_unshift_method());
     instance_methods.insert("splice".to_string(), create_splice_method());
 
+    // Higher-order methods
+    instance_methods.insert("map".to_string(), create_map_method());
+    instance_methods.insert("filter".to_string(), create_filter_method());
+    instance_methods.insert("reduce".to_string(), create_reduce_method());
+    instance_methods.insert("forEach".to_string(), create_for_each_method());
+    instance_methods.insert("find".to_string(), create_find_method());
+    instance_methods.insert("findIndex".to_string(), create_find_index_method());
+    instance_methods.insert("some".to_string(), create_some_method());
+    instance_methods.insert("every".to_string(), create_every_method());
+
     GlobalObject {
         name: "Array".to_string(),
         constructor_type: Type::Function {
@@ -241,6 +251,138 @@ fn create_splice_method() -> GlobalMethod {
         false,
         false,
     )
+}
+
+/// arr.map(callback) - creates new array with results of calling callback for every element
+fn create_map_method() -> GlobalMethod {
+    let parameters = vec![create_global_parameter(
+        "callback",
+        Type::Function {
+            params: vec![Type::Any, Type::Number, Type::Array(Box::new(Type::Any))],
+            return_type: Box::new(Type::Any),
+        },
+        false,
+        None,
+    )];
+    create_global_method(
+        "map",
+        parameters,
+        Type::Array(Box::new(Type::Any)),
+        false,
+        false,
+    )
+}
+
+/// arr.filter(callback) - creates new array with elements that pass the test
+fn create_filter_method() -> GlobalMethod {
+    let parameters = vec![create_global_parameter(
+        "callback",
+        Type::Function {
+            params: vec![Type::Any, Type::Number, Type::Array(Box::new(Type::Any))],
+            return_type: Box::new(Type::Boolean),
+        },
+        false,
+        None,
+    )];
+    create_global_method(
+        "filter",
+        parameters,
+        Type::Array(Box::new(Type::Any)),
+        false,
+        false,
+    )
+}
+
+/// arr.reduce(callback, initialValue?) - reduces array to single value
+fn create_reduce_method() -> GlobalMethod {
+    let parameters = vec![
+        create_global_parameter(
+            "callback",
+            Type::Function {
+                params: vec![
+                    Type::Any,
+                    Type::Any,
+                    Type::Number,
+                    Type::Array(Box::new(Type::Any)),
+                ],
+                return_type: Box::new(Type::Any),
+            },
+            false,
+            None,
+        ),
+        create_global_parameter("initialValue", Type::Any, true, None),
+    ];
+    create_global_method("reduce", parameters, Type::Any, false, false)
+}
+
+/// arr.forEach(callback) - executes callback for each element
+fn create_for_each_method() -> GlobalMethod {
+    let parameters = vec![create_global_parameter(
+        "callback",
+        Type::Function {
+            params: vec![Type::Any, Type::Number, Type::Array(Box::new(Type::Any))],
+            return_type: Box::new(Type::Void),
+        },
+        false,
+        None,
+    )];
+    create_global_method("forEach", parameters, Type::Void, false, false)
+}
+
+/// arr.find(callback) - returns first element that satisfies callback
+fn create_find_method() -> GlobalMethod {
+    let parameters = vec![create_global_parameter(
+        "callback",
+        Type::Function {
+            params: vec![Type::Any, Type::Number, Type::Array(Box::new(Type::Any))],
+            return_type: Box::new(Type::Boolean),
+        },
+        false,
+        None,
+    )];
+    create_global_method("find", parameters, Type::Any, false, false)
+}
+
+/// arr.findIndex(callback) - returns index of first element that satisfies callback
+fn create_find_index_method() -> GlobalMethod {
+    let parameters = vec![create_global_parameter(
+        "callback",
+        Type::Function {
+            params: vec![Type::Any, Type::Number, Type::Array(Box::new(Type::Any))],
+            return_type: Box::new(Type::Boolean),
+        },
+        false,
+        None,
+    )];
+    create_global_method("findIndex", parameters, Type::Number, false, false)
+}
+
+/// arr.some(callback) - tests whether at least one element passes the test
+fn create_some_method() -> GlobalMethod {
+    let parameters = vec![create_global_parameter(
+        "callback",
+        Type::Function {
+            params: vec![Type::Any, Type::Number, Type::Array(Box::new(Type::Any))],
+            return_type: Box::new(Type::Boolean),
+        },
+        false,
+        None,
+    )];
+    create_global_method("some", parameters, Type::Boolean, false, false)
+}
+
+/// arr.every(callback) - tests whether all elements pass the test
+fn create_every_method() -> GlobalMethod {
+    let parameters = vec![create_global_parameter(
+        "callback",
+        Type::Function {
+            params: vec![Type::Any, Type::Number, Type::Array(Box::new(Type::Any))],
+            return_type: Box::new(Type::Boolean),
+        },
+        false,
+        None,
+    )];
+    create_global_method("every", parameters, Type::Boolean, false, false)
 }
 
 /// Helper functions for array literal parsing
@@ -428,6 +570,10 @@ mod tests {
         assert!(array_global.instance_methods.contains_key("pop"));
         assert!(array_global.instance_methods.contains_key("slice"));
         assert!(array_global.instance_methods.contains_key("join"));
+        assert!(array_global.instance_methods.contains_key("map"));
+        assert!(array_global.instance_methods.contains_key("filter"));
+        assert!(array_global.instance_methods.contains_key("reduce"));
+        assert!(array_global.instance_methods.contains_key("forEach"));
     }
 
     #[test]

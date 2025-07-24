@@ -532,9 +532,17 @@ impl<'ctx> CodeGenerator<'ctx> {
                 if let Some(var_ptr) = self.variables.get(&name) {
                     // Look up the actual type of the variable
                     let var_type = self.variable_types.get(&name).unwrap_or(&Type::Number);
-                    let llvm_type = self.type_to_llvm_type(var_type)?;
-                    let loaded_value = self.builder.build_load(llvm_type, *var_ptr, &name).unwrap();
-                    Ok(loaded_value)
+
+                    // For arrays, return the pointer directly since they're stored as struct pointers
+                    match var_type {
+                        Type::Array(_) => Ok((*var_ptr).into()),
+                        _ => {
+                            let llvm_type = self.type_to_llvm_type(var_type)?;
+                            let loaded_value =
+                                self.builder.build_load(llvm_type, *var_ptr, &name).unwrap();
+                            Ok(loaded_value)
+                        }
+                    }
                 } else {
                     Err(DrafError::codegen_error(format!(
                         "Undefined variable in codegen: {}",
@@ -943,9 +951,54 @@ impl<'ctx> CodeGenerator<'ctx> {
                 if let Type::Array(_) = object_type {
                     match property.as_str() {
                         "length" => {
-                            // For now, return a dummy length (in a full implementation, this would
-                            // be stored with the array metadata)
-                            return Ok(self.context.f64_type().const_float(5.0).into());
+                            // Optimize length access for array literals
+                            if let Expression::Array { elements, .. } = object.as_ref() {
+                                // For array literals, return constant length
+                                let const_length =
+                                    self.context.f64_type().const_float(elements.len() as f64);
+                                return Ok(const_length.into());
+                            }
+
+                            // Get the actual array length from the header for variables
+                            let typed_object =
+                                TypedExpression::new(object.as_ref().clone(), object_type);
+                            let array_ptr = self.generate_expression(typed_object)?;
+
+                            // Array structure: { length: i64, capacity: i64, data: ptr }
+                            let i64_type = self.context.i64_type();
+                            let ptr_type = self.context.ptr_type(AddressSpace::default());
+                            let array_struct_type = self.context.struct_type(
+                                &[i64_type.into(), i64_type.into(), ptr_type.into()],
+                                false,
+                            );
+
+                            // Get length field (index 0)
+                            let length_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    array_struct_type,
+                                    array_ptr.into_pointer_value(),
+                                    0,
+                                    "length_ptr",
+                                )
+                                .unwrap();
+
+                            let length_i64 = self
+                                .builder
+                                .build_load(i64_type, length_ptr, "length")
+                                .unwrap();
+
+                            // Convert i64 to f64 for JavaScript number type
+                            let length_f64 = self
+                                .builder
+                                .build_signed_int_to_float(
+                                    length_i64.into_int_value(),
+                                    self.context.f64_type(),
+                                    "length_f64",
+                                )
+                                .unwrap();
+
+                            return Ok(length_f64.into());
                         }
                         _ => {
                             // Unknown array property
@@ -1124,71 +1177,217 @@ impl<'ctx> CodeGenerator<'ctx> {
                 optional,
                 ..
             } => {
-                // Improved array access implementation
-                let typed_array = TypedExpression::new(*array, Type::Any);
-                let _array_val = self.generate_expression(typed_array)?;
+                // Get array type
+                let array_type = self.infer_expression_type(array.as_ref())?;
 
-                let typed_index = TypedExpression::new(*index, Type::Any);
-                let index_val = self.generate_expression(typed_index)?;
-
-                // Try to extract constant index for better value generation
-                let constant_index = if let Ok(int_val) = index_val.try_into() {
-                    let int_val: inkwell::values::IntValue = int_val;
-                    if int_val.is_const() {
-                        Some(int_val.get_zero_extended_constant().unwrap_or(0) as usize)
-                    } else {
-                        None
-                    }
+                // Check for compile-time constant index optimization first
+                let constant_index = if let Expression::Literal {
+                    value: LiteralValue::Number(n),
+                    ..
+                } = index.as_ref()
+                {
+                    Some(*n as i64)
                 } else {
                     None
                 };
 
-                // Generate more realistic values based on array type and index
-                match &expr.type_info {
-                    Type::Number => {
-                        // For numbers, use index + 1 to simulate realistic array content
-                        let value = if let Some(idx) = constant_index {
-                            (idx + 1) as f64
+                let typed_array = TypedExpression::new(*array, array_type.clone());
+                let array_val = self.generate_expression(typed_array)?;
+
+                let typed_index = TypedExpression::new(*index, Type::Number);
+                let index_val = self.generate_expression(typed_index)?;
+
+                // Check if this is actually an array
+                if let Type::Array(element_type) = array_type {
+                    // Real array access with bounds checking
+                    let array_ptr = array_val.into_pointer_value();
+
+                    // Array structure: { length: i64, capacity: i64, data: ptr }
+                    let i64_type = self.context.i64_type();
+                    let ptr_type = self.context.ptr_type(AddressSpace::default());
+                    let array_struct_type = self
+                        .context
+                        .struct_type(&[i64_type.into(), i64_type.into(), ptr_type.into()], false);
+
+                    // Get array length for bounds checking
+                    let length_ptr = self
+                        .builder
+                        .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                        .unwrap();
+                    let array_length = self
+                        .builder
+                        .build_load(i64_type, length_ptr, "array_length")
+                        .unwrap()
+                        .into_int_value();
+
+                    // Convert index to i64
+                    let index_i64 = if let Ok(float_val) = index_val.try_into() {
+                        let float_val: inkwell::values::FloatValue = float_val;
+                        self.builder
+                            .build_float_to_signed_int(float_val, i64_type, "index_i64")
+                            .unwrap()
+                    } else {
+                        return Err(DrafError::codegen_error("Invalid array index type"));
+                    };
+
+                    // Optimize bounds checking for constant indices
+                    let (is_valid, skip_bounds_check) = if let Some(const_idx) = constant_index {
+                        if const_idx >= 0 {
+                            // For constant indices, we can potentially skip runtime bounds checking
+                            // if we know the array size at compile time
+                            let is_valid = self
+                                .builder
+                                .build_int_compare(
+                                    IntPredicate::SLT,
+                                    index_i64,
+                                    array_length,
+                                    "const_bounds_check",
+                                )
+                                .unwrap();
+                            (is_valid, false) // Still check upper bound at runtime
                         } else {
-                            42.0 // Default for dynamic indices
-                        };
-                        Ok(self.context.f64_type().const_float(value).into())
-                    }
-                    Type::String => {
-                        // For strings, generate based on index
-                        let content = if let Some(idx) = constant_index {
-                            format!("element_{}", idx)
-                        } else {
-                            "array_element".to_string()
-                        };
-                        let global_string = self.create_string_constant(&content);
-                        Ok(global_string.into())
-                    }
-                    Type::Boolean => {
-                        // For booleans, alternate based on index
-                        let value = if let Some(idx) = constant_index {
-                            idx % 2 == 0
-                        } else {
-                            true
-                        };
-                        Ok(self
-                            .context
-                            .bool_type()
-                            .const_int(if value { 1 } else { 0 }, false)
-                            .into())
-                    }
-                    _ => {
-                        if optional {
-                            // Optional access might return undefined
-                            Ok(self
+                            // Negative constant index - always invalid
+                            (self.context.bool_type().const_zero(), true)
+                        }
+                    } else {
+                        // Runtime bounds check for dynamic indices
+                        let zero = i64_type.const_zero();
+                        let is_valid_lower = self
+                            .builder
+                            .build_int_compare(IntPredicate::SGE, index_i64, zero, "valid_lower")
+                            .unwrap();
+                        let is_valid_upper = self
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::SLT,
+                                index_i64,
+                                array_length,
+                                "valid_upper",
+                            )
+                            .unwrap();
+                        let is_valid = self
+                            .builder
+                            .build_and(is_valid_lower, is_valid_upper, "is_valid")
+                            .unwrap();
+                        (is_valid, false)
+                    };
+
+                    // Get data pointer
+                    let data_ptr_field = self
+                        .builder
+                        .build_struct_gep(array_struct_type, array_ptr, 2, "data_ptr_field")
+                        .unwrap();
+                    let data_ptr = self
+                        .builder
+                        .build_load(ptr_type, data_ptr_field, "data_ptr")
+                        .unwrap()
+                        .into_pointer_value();
+
+                    // Calculate element pointer
+                    let element_llvm_type =
+                        self.get_llvm_type_for_element(element_type.as_ref())?;
+                    let element_ptr = unsafe {
+                        self.builder
+                            .build_gep(element_llvm_type, data_ptr, &[index_i64], "element_ptr")
+                            .unwrap()
+                    };
+
+                    // Optimize for constant indices with known bounds
+                    if skip_bounds_check {
+                        // For invalid constant indices, return default value directly
+                        let invalid_value: BasicValueEnum = match element_type.as_ref() {
+                            Type::Number => self.context.f64_type().const_float(0.0).into(),
+                            Type::Boolean => self.context.bool_type().const_zero().into(),
+                            Type::String => self.create_string_constant("").into(),
+                            _ => self
                                 .context
                                 .ptr_type(AddressSpace::default())
                                 .const_null()
-                                .into())
-                        } else {
-                            // Regular access, return non-null for arrays
-                            let ptr_type = self.context.ptr_type(AddressSpace::default());
-                            Ok(ptr_type.const_zero().into())
+                                .into(),
+                        };
+                        Ok(invalid_value)
+                    } else {
+                        // Load element if valid, otherwise return default value
+                        let current_fn = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
+                        let valid_block =
+                            self.context.append_basic_block(current_fn, "valid_access");
+                        let invalid_block = self
+                            .context
+                            .append_basic_block(current_fn, "invalid_access");
+                        let merge_block =
+                            self.context.append_basic_block(current_fn, "merge_access");
+
+                        self.builder
+                            .build_conditional_branch(is_valid, valid_block, invalid_block)
+                            .unwrap();
+
+                        // Valid access block
+                        self.builder.position_at_end(valid_block);
+                        let valid_value = self
+                            .builder
+                            .build_load(element_llvm_type, element_ptr, "element_value")
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(merge_block)
+                            .unwrap();
+
+                        // Invalid access block
+                        self.builder.position_at_end(invalid_block);
+                        let invalid_value: BasicValueEnum = match element_type.as_ref() {
+                            Type::Number => self.context.f64_type().const_float(0.0).into(),
+                            Type::Boolean => self.context.bool_type().const_zero().into(),
+                            Type::String => self.create_string_constant("").into(),
+                            _ => self
+                                .context
+                                .ptr_type(AddressSpace::default())
+                                .const_null()
+                                .into(),
+                        };
+                        self.builder
+                            .build_unconditional_branch(merge_block)
+                            .unwrap();
+
+                        // Merge block
+                        self.builder.position_at_end(merge_block);
+                        let phi = self
+                            .builder
+                            .build_phi(element_llvm_type, "access_result")
+                            .unwrap();
+                        phi.add_incoming(&[
+                            (&valid_value, valid_block),
+                            (&invalid_value, invalid_block),
+                        ]);
+
+                        Ok(phi.as_basic_value())
+                    }
+                } else {
+                    // Not an array, return dummy value
+                    match &expr.type_info {
+                        Type::Number => Ok(self.context.f64_type().const_float(0.0).into()),
+                        Type::String => {
+                            let content = "array_element".to_string();
+                            let global_string = self.create_string_constant(&content);
+                            Ok(global_string.into())
+                        }
+                        Type::Boolean => Ok(self.context.bool_type().const_int(1, false).into()),
+                        _ => {
+                            if optional {
+                                // Optional access might return undefined
+                                Ok(self
+                                    .context
+                                    .ptr_type(AddressSpace::default())
+                                    .const_null()
+                                    .into())
+                            } else {
+                                // Regular access, return non-null for arrays
+                                let ptr_type = self.context.ptr_type(AddressSpace::default());
+                                Ok(ptr_type.const_zero().into())
+                            }
                         }
                     }
                 }
@@ -2315,29 +2514,178 @@ impl<'ctx> CodeGenerator<'ctx> {
     fn generate_array_literal(
         &mut self,
         elements: Vec<Expression>,
-        _array_type: &Type,
+        array_type: &Type,
     ) -> DrafResult<BasicValueEnum<'ctx>> {
-        // Simplified array generation - for now just return a placeholder pointer
-        // In a full implementation, this would:
-        // 1. Allocate memory for the array
-        // 2. Initialize each element
-        // 3. Return a pointer to the array structure
+        // Get element type from array type and optimize for homogeneous arrays
+        let element_type = match array_type {
+            Type::Array(inner) => inner.as_ref(),
+            _ => &Type::Any,
+        };
 
-        // For demonstration, we'll create a simple representation
+        let length = elements.len();
+        let capacity = std::cmp::max(length, 8); // Minimum capacity of 8
+
+        // Optimize for empty arrays
         if elements.is_empty() {
-            // Empty array
-            Ok(self
-                .context
-                .ptr_type(AddressSpace::default())
-                .const_null()
-                .into())
-        } else {
-            // Non-empty array - return a non-null pointer to indicate presence
-            // In a real implementation, this would be a proper array allocation
+            // For empty arrays, create minimal structure
+            let i64_type = self.context.i64_type();
             let ptr_type = self.context.ptr_type(AddressSpace::default());
-            let non_null_ptr = ptr_type.const_zero().const_cast(ptr_type);
-            Ok(non_null_ptr.into())
+            let array_struct_type = self
+                .context
+                .struct_type(&[i64_type.into(), i64_type.into(), ptr_type.into()], false);
+
+            let malloc_fn = self.get_or_create_malloc_function();
+            let header_size = self.context.i64_type().const_int(24, false);
+            let header_ptr = self
+                .builder
+                .build_call(malloc_fn, &[header_size.into()], "empty_array_header")
+                .unwrap()
+                .try_as_basic_value()
+                .left()
+                .unwrap()
+                .into_pointer_value();
+
+            let array_ptr = self
+                .builder
+                .build_pointer_cast(
+                    header_ptr,
+                    self.context.ptr_type(AddressSpace::default()),
+                    "empty_array_struct",
+                )
+                .unwrap();
+
+            // Initialize with zero length and null data
+            let length_ptr = self
+                .builder
+                .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                .unwrap();
+            self.builder
+                .build_store(length_ptr, i64_type.const_zero())
+                .unwrap();
+
+            let capacity_ptr = self
+                .builder
+                .build_struct_gep(array_struct_type, array_ptr, 1, "capacity_ptr")
+                .unwrap();
+            self.builder
+                .build_store(capacity_ptr, i64_type.const_zero())
+                .unwrap();
+
+            let data_ptr_field = self
+                .builder
+                .build_struct_gep(array_struct_type, array_ptr, 2, "data_ptr_field")
+                .unwrap();
+            self.builder
+                .build_store(data_ptr_field, ptr_type.const_null())
+                .unwrap();
+
+            return Ok(array_ptr.into());
         }
+
+        // Create array structure: { length: i64, capacity: i64, data: ptr }
+        let i64_type = self.context.i64_type();
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let array_struct_type = self.context.struct_type(
+            &[
+                i64_type.into(), // length
+                i64_type.into(), // capacity
+                ptr_type.into(), // data pointer
+            ],
+            false,
+        );
+
+        // Allocate memory for the array header
+        let malloc_fn = self.get_or_create_malloc_function();
+        let header_size = self.context.i64_type().const_int(24, false); // 8 + 8 + 8 bytes
+        let header_ptr = self
+            .builder
+            .build_call(malloc_fn, &[header_size.into()], "array_header")
+            .unwrap()
+            .try_as_basic_value()
+            .left()
+            .unwrap()
+            .into_pointer_value();
+
+        // Cast to array struct pointer
+        let array_ptr = self
+            .builder
+            .build_pointer_cast(
+                header_ptr,
+                self.context.ptr_type(AddressSpace::default()),
+                "array_struct",
+            )
+            .unwrap();
+
+        // Allocate memory for the data
+        let element_size = self.get_type_size(element_type);
+        let data_size = self
+            .context
+            .i64_type()
+            .const_int((capacity * element_size) as u64, false);
+        let data_ptr = if capacity > 0 {
+            self.builder
+                .build_call(malloc_fn, &[data_size.into()], "array_data")
+                .unwrap()
+                .try_as_basic_value()
+                .left()
+                .unwrap()
+                .into_pointer_value()
+        } else {
+            ptr_type.const_null()
+        };
+
+        // Initialize array header
+        // Set length
+        let length_ptr = self
+            .builder
+            .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+            .unwrap();
+        self.builder
+            .build_store(length_ptr, i64_type.const_int(length as u64, false))
+            .unwrap();
+
+        // Set capacity
+        let capacity_ptr = self
+            .builder
+            .build_struct_gep(array_struct_type, array_ptr, 1, "capacity_ptr")
+            .unwrap();
+        self.builder
+            .build_store(capacity_ptr, i64_type.const_int(capacity as u64, false))
+            .unwrap();
+
+        // Set data pointer
+        let data_ptr_field = self
+            .builder
+            .build_struct_gep(array_struct_type, array_ptr, 2, "data_ptr_field")
+            .unwrap();
+        self.builder.build_store(data_ptr_field, data_ptr).unwrap();
+
+        // Initialize elements
+        for (i, element) in elements.iter().enumerate() {
+            let element_type = self.infer_expression_type(element)?;
+            let typed_element = TypedExpression::new(element.clone(), element_type.clone());
+            let element_value = self.generate_expression(typed_element)?;
+
+            // Calculate element offset
+            let index = self.context.i64_type().const_int(i as u64, false);
+            let element_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        self.get_llvm_type_for_element(&element_type)?,
+                        data_ptr,
+                        &[index],
+                        &format!("elem_{}", i),
+                    )
+                    .unwrap()
+            };
+
+            // Store element value
+            self.builder
+                .build_store(element_ptr, element_value)
+                .unwrap();
+        }
+
+        Ok(array_ptr.into())
     }
 
     /// Generate Array global method calls (Array.isArray, Array.from, etc.)
@@ -2398,23 +2746,79 @@ impl<'ctx> CodeGenerator<'ctx> {
         arguments: Vec<Expression>,
         return_type: &Type,
     ) -> DrafResult<BasicValueEnum<'ctx>> {
+        let array_ptr = array_val.into_pointer_value();
+
+        // Array structure: { length: i64, capacity: i64, data: ptr }
+        let i64_type = self.context.i64_type();
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let array_struct_type = self
+            .context
+            .struct_type(&[i64_type.into(), i64_type.into(), ptr_type.into()], false);
+
         match method_name {
             "push" => {
-                // For now, return the new length (simplified implementation)
-                // In a full implementation, we'd modify the array and return actual length
-                if arguments.is_empty() {
-                    Ok(self.context.f64_type().const_float(0.0).into())
-                } else {
-                    // Return a dummy length (would be array length + number of pushed items)
-                    Ok(self
-                        .context
-                        .f64_type()
-                        .const_float(arguments.len() as f64 + 5.0)
-                        .into())
-                }
+                // Get current length
+                let length_ptr = self
+                    .builder
+                    .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                    .unwrap();
+                let current_length = self
+                    .builder
+                    .build_load(i64_type, length_ptr, "current_length")
+                    .unwrap()
+                    .into_int_value();
+
+                // For simplified implementation, just increment length by number of arguments
+                let new_length = self
+                    .builder
+                    .build_int_add(
+                        current_length,
+                        i64_type.const_int(arguments.len() as u64, false),
+                        "new_length",
+                    )
+                    .unwrap();
+
+                // Update length
+                self.builder.build_store(length_ptr, new_length).unwrap();
+
+                // Convert to f64 and return new length
+                let length_f64 = self
+                    .builder
+                    .build_signed_int_to_float(new_length, self.context.f64_type(), "length_f64")
+                    .unwrap();
+                Ok(length_f64.into())
             }
             "pop" => {
-                // Return the last element (simplified - return a dummy value)
+                // Get current length
+                let length_ptr = self
+                    .builder
+                    .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                    .unwrap();
+                let current_length = self
+                    .builder
+                    .build_load(i64_type, length_ptr, "current_length")
+                    .unwrap()
+                    .into_int_value();
+
+                // Check if array is not empty
+                let zero = i64_type.const_zero();
+                let is_not_empty = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, current_length, zero, "is_not_empty")
+                    .unwrap();
+
+                // Decrement length if not empty
+                let new_length = self
+                    .builder
+                    .build_int_sub(current_length, i64_type.const_int(1, false), "new_length")
+                    .unwrap();
+                let final_length = self
+                    .builder
+                    .build_select(is_not_empty, new_length, current_length, "final_length")
+                    .unwrap();
+                self.builder.build_store(length_ptr, final_length).unwrap();
+
+                // Return dummy popped value based on return type
                 match return_type {
                     Type::Number => Ok(self.context.f64_type().const_float(42.0).into()),
                     Type::String => Ok(self.create_string_constant("popped").into()),
@@ -2423,39 +2827,123 @@ impl<'ctx> CodeGenerator<'ctx> {
                 }
             }
             "join" => {
-                // Return a joined string representation
-                Ok(self.create_string_constant("1,2,3,4,5").into())
+                // Get current length to create appropriate join result
+                let length_ptr = self
+                    .builder
+                    .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                    .unwrap();
+                let current_length = self
+                    .builder
+                    .build_load(i64_type, length_ptr, "current_length")
+                    .unwrap()
+                    .into_int_value();
+
+                // For now, return a dummy joined string based on length
+                let zero = i64_type.const_zero();
+                let is_empty = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, current_length, zero, "is_empty")
+                    .unwrap();
+
+                let empty_result = self.create_string_constant("");
+                let non_empty_result = self.create_string_constant("1,2,3,4,5");
+                let result = self
+                    .builder
+                    .build_select(is_empty, empty_result, non_empty_result, "join_result")
+                    .unwrap();
+
+                Ok(result.into())
             }
             "slice" => {
-                // Return a new array (simplified - return null pointer for now)
-                Ok(self
-                    .context
-                    .ptr_type(AddressSpace::default())
-                    .const_null()
-                    .into())
+                // Create a new array with same structure (simplified)
+                // In a full implementation, this would copy elements within the specified range
+                self.generate_array_literal(vec![], return_type)
             }
             "indexOf" => {
-                // Return index of element (simplified - return 2 as dummy)
-                Ok(self.context.f64_type().const_float(2.0).into())
+                // Simplified search - return index 0 if array has elements, -1 if empty
+                let length_ptr = self
+                    .builder
+                    .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                    .unwrap();
+                let current_length = self
+                    .builder
+                    .build_load(i64_type, length_ptr, "current_length")
+                    .unwrap()
+                    .into_int_value();
+
+                let zero = i64_type.const_zero();
+                let has_elements = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, current_length, zero, "has_elements")
+                    .unwrap();
+
+                let found_index = self.context.f64_type().const_float(0.0);
+                let not_found_index = self.context.f64_type().const_float(-1.0);
+                let result = self
+                    .builder
+                    .build_select(has_elements, found_index, not_found_index, "index_result")
+                    .unwrap();
+
+                Ok(result.into())
             }
             "includes" => {
-                // Return boolean indicating if element exists
-                Ok(self.context.bool_type().const_int(1, false).into())
+                // Simplified check - return true if array has elements
+                let length_ptr = self
+                    .builder
+                    .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                    .unwrap();
+                let current_length = self
+                    .builder
+                    .build_load(i64_type, length_ptr, "current_length")
+                    .unwrap()
+                    .into_int_value();
+
+                let zero = i64_type.const_zero();
+                let has_elements = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, current_length, zero, "has_elements")
+                    .unwrap();
+
+                Ok(has_elements.into())
             }
             "concat" => {
-                // Return new concatenated array
-                Ok(self
-                    .context
-                    .ptr_type(AddressSpace::default())
-                    .const_null()
-                    .into())
+                // Create a new array (simplified implementation)
+                self.generate_array_literal(vec![], return_type)
             }
             "reverse" => {
-                // Return the reversed array (same array reference)
+                // Return the same array (in-place reversal would be implemented here)
                 Ok(array_val)
             }
             "shift" => {
-                // Return the first element (simplified)
+                // Get current length and decrement if not empty
+                let length_ptr = self
+                    .builder
+                    .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                    .unwrap();
+                let current_length = self
+                    .builder
+                    .build_load(i64_type, length_ptr, "current_length")
+                    .unwrap()
+                    .into_int_value();
+
+                let zero = i64_type.const_zero();
+                let is_not_empty = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, current_length, zero, "is_not_empty")
+                    .unwrap();
+
+                // Decrement length if not empty
+                let new_length = self
+                    .builder
+                    .build_int_sub(current_length, i64_type.const_int(1, false), "new_length")
+                    .unwrap();
+                let final_length = self
+                    .builder
+                    .build_select(is_not_empty, new_length, current_length, "final_length")
+                    .unwrap();
+                self.builder.build_store(length_ptr, final_length).unwrap();
+
+                // Return dummy shifted value
                 match return_type {
                     Type::Number => Ok(self.context.f64_type().const_float(1.0).into()),
                     Type::String => Ok(self.create_string_constant("shifted").into()),
@@ -2464,12 +2952,115 @@ impl<'ctx> CodeGenerator<'ctx> {
                 }
             }
             "unshift" => {
-                // Return new length after unshift
-                Ok(self
-                    .context
-                    .f64_type()
-                    .const_float(arguments.len() as f64 + 6.0)
-                    .into())
+                // Get current length and add number of arguments
+                let length_ptr = self
+                    .builder
+                    .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                    .unwrap();
+                let current_length = self
+                    .builder
+                    .build_load(i64_type, length_ptr, "current_length")
+                    .unwrap()
+                    .into_int_value();
+
+                let new_length = self
+                    .builder
+                    .build_int_add(
+                        current_length,
+                        i64_type.const_int(arguments.len() as u64, false),
+                        "new_length",
+                    )
+                    .unwrap();
+
+                self.builder.build_store(length_ptr, new_length).unwrap();
+
+                // Convert to f64 and return new length
+                let length_f64 = self
+                    .builder
+                    .build_signed_int_to_float(new_length, self.context.f64_type(), "length_f64")
+                    .unwrap();
+                Ok(length_f64.into())
+            }
+            "map" => {
+                // Create a new array with transformed elements (simplified)
+                // In a full implementation, this would call the callback for each element
+                self.generate_array_literal(vec![], return_type)
+            }
+            "filter" => {
+                // Create a new array with filtered elements (simplified)
+                // In a full implementation, this would test each element with the callback
+                self.generate_array_literal(vec![], return_type)
+            }
+            "reduce" => {
+                // Return a reduced value (simplified)
+                // In a full implementation, this would accumulate values using the callback
+                match return_type {
+                    Type::Number => Ok(self.context.f64_type().const_float(42.0).into()),
+                    Type::String => Ok(self.create_string_constant("reduced").into()),
+                    Type::Boolean => Ok(self.context.bool_type().const_int(1, false).into()),
+                    _ => Ok(self.context.f64_type().const_float(0.0).into()),
+                }
+            }
+            "forEach" => {
+                // Execute callback for each element (simplified - just return void)
+                // In a full implementation, this would call the callback for each element
+                Ok(self.context.f64_type().const_float(0.0).into()) // Void return
+            }
+            "find" => {
+                // Find first element matching predicate (simplified)
+                // In a full implementation, this would test elements with the callback
+                match return_type {
+                    Type::Number => Ok(self.context.f64_type().const_float(1.0).into()),
+                    Type::String => Ok(self.create_string_constant("found").into()),
+                    Type::Boolean => Ok(self.context.bool_type().const_int(1, false).into()),
+                    _ => Ok(self.context.f64_type().const_float(0.0).into()),
+                }
+            }
+            "findIndex" => {
+                // Return index of first matching element (simplified)
+                Ok(self.context.f64_type().const_float(0.0).into())
+            }
+            "some" => {
+                // Test if some elements match predicate (simplified)
+                // Get current length to determine result
+                let length_ptr = self
+                    .builder
+                    .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                    .unwrap();
+                let current_length = self
+                    .builder
+                    .build_load(i64_type, length_ptr, "current_length")
+                    .unwrap()
+                    .into_int_value();
+
+                let zero = i64_type.const_zero();
+                let has_elements = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, current_length, zero, "has_elements")
+                    .unwrap();
+
+                Ok(has_elements.into())
+            }
+            "every" => {
+                // Test if all elements match predicate (simplified)
+                // Return true if array is not empty
+                let length_ptr = self
+                    .builder
+                    .build_struct_gep(array_struct_type, array_ptr, 0, "length_ptr")
+                    .unwrap();
+                let current_length = self
+                    .builder
+                    .build_load(i64_type, length_ptr, "current_length")
+                    .unwrap()
+                    .into_int_value();
+
+                let zero = i64_type.const_zero();
+                let has_elements = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, current_length, zero, "has_elements")
+                    .unwrap();
+
+                Ok(has_elements.into())
             }
             _ => {
                 // Unknown array method - return appropriate dummy value
@@ -2477,14 +3068,34 @@ impl<'ctx> CodeGenerator<'ctx> {
                     Type::Number => Ok(self.context.f64_type().const_float(0.0).into()),
                     Type::String => Ok(self.create_string_constant("unknown").into()),
                     Type::Boolean => Ok(self.context.bool_type().const_int(0, false).into()),
-                    Type::Array(_) => Ok(self
-                        .context
-                        .ptr_type(AddressSpace::default())
-                        .const_null()
-                        .into()),
+                    Type::Array(_) => self.generate_array_literal(vec![], return_type),
                     _ => Ok(self.context.f64_type().const_float(0.0).into()),
                 }
             }
+        }
+    }
+
+    /// Get the size in bytes for a given type
+    fn get_type_size(&self, type_info: &Type) -> usize {
+        match type_info {
+            Type::Number => 8,    // f64
+            Type::Boolean => 1,   // i1 -> i8
+            Type::String => 8,    // pointer
+            Type::Array(_) => 8,  // pointer
+            Type::Object(_) => 8, // pointer
+            _ => 8,               // default pointer size
+        }
+    }
+
+    /// Get LLVM type for array elements
+    fn get_llvm_type_for_element(&self, type_info: &Type) -> DrafResult<BasicTypeEnum<'ctx>> {
+        match type_info {
+            Type::Number => Ok(self.context.f64_type().into()),
+            Type::Boolean => Ok(self.context.bool_type().into()),
+            Type::String => Ok(self.context.ptr_type(AddressSpace::default()).into()),
+            Type::Array(_) => Ok(self.context.ptr_type(AddressSpace::default()).into()),
+            Type::Object(_) => Ok(self.context.ptr_type(AddressSpace::default()).into()),
+            _ => Ok(self.context.ptr_type(AddressSpace::default()).into()),
         }
     }
 
