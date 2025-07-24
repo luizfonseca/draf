@@ -7,6 +7,8 @@
 pub mod date;
 pub mod number;
 
+use crate::arrays;
+
 use crate::ast::{Expression, SourceLocation};
 
 use crate::types::Type;
@@ -58,6 +60,7 @@ impl GlobalRegistry {
         // Register built-in global objects
         registry.register_number();
         registry.register_date();
+        registry.register_array();
 
         registry
     }
@@ -72,6 +75,12 @@ impl GlobalRegistry {
     fn register_date(&mut self) {
         let date_global = date::create_date_global();
         self.objects.insert("Date".to_string(), date_global);
+    }
+
+    /// Register the Array global object
+    fn register_array(&mut self) {
+        let array_global = arrays::create_array_global();
+        self.objects.insert("Array".to_string(), array_global);
     }
 
     /// Get a global object by name
@@ -172,9 +181,10 @@ mod tests {
     fn test_global_registry_creation() {
         let registry = GlobalRegistry::new();
 
-        // Should have Number and Date registered
+        // Should have Number, Date, and Array registered
         assert!(registry.is_global("Number"));
         assert!(registry.is_global("Date"));
+        assert!(registry.is_global("Array"));
         assert!(!registry.is_global("NonExistent"));
     }
 
@@ -185,5 +195,6 @@ mod tests {
 
         assert!(names.contains(&&"Number".to_string()));
         assert!(names.contains(&&"Date".to_string()));
+        assert!(names.contains(&&"Array".to_string()));
     }
 }

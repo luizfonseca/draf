@@ -1551,6 +1551,10 @@ impl<'a> Parser<'a> {
                     // Object literal { key: value, ... }
                     self.parse_object_literal()
                 }
+                TokenKind::LeftBracket => {
+                    // Array literal [ element1, element2, ... ]
+                    self.parse_array_literal()
+                }
                 _ => Err(DrafError::parse_error(
                     token.line,
                     token.column,
@@ -1657,6 +1661,59 @@ impl<'a> Parser<'a> {
         self.consume(TokenKind::RightBrace, "Expected '}' after object literal")?;
 
         Ok(Expression::Object { fields, location })
+    }
+
+    /// Parse array literal [ element1, element2, ... ]
+    fn parse_array_literal(&mut self) -> DrafResult<Expression> {
+        let location = self.current_location();
+        self.advance(); // consume '['
+
+        // Skip newlines after opening bracket
+        while self.check(&TokenKind::Newline) {
+            self.advance();
+        }
+
+        let mut elements = Vec::new();
+
+        while !self.check(&TokenKind::RightBracket) && !self.is_at_end() {
+            // Skip newlines before element
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            // Break if we hit the closing bracket after skipping newlines
+            if self.check(&TokenKind::RightBracket) {
+                break;
+            }
+
+            // Parse array element
+            elements.push(self.parse_expression()?);
+
+            // Skip newlines after element
+            while self.check(&TokenKind::Newline) {
+                self.advance();
+            }
+
+            // Check for comma or end
+            if self.check(&TokenKind::Comma) {
+                self.advance(); // consume ','
+
+                // Skip newlines after comma
+                while self.check(&TokenKind::Newline) {
+                    self.advance();
+                }
+            } else {
+                // No comma, skip any newlines before closing bracket
+                while self.check(&TokenKind::Newline) {
+                    self.advance();
+                }
+                break;
+            }
+        }
+
+        self.consume(TokenKind::RightBracket, "Expected ']' after array elements")?;
+
+        Ok(Expression::Array { elements, location })
     }
 
     /// Parse type annotation

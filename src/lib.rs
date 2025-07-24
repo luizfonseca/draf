@@ -3,6 +3,7 @@
 //! This library provides the core components for compiling a strongly typed
 //! variant of TypeScript to native code via LLVM.
 
+pub mod arrays;
 pub mod ast;
 pub mod codegen;
 pub mod error;

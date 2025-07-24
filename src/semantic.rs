@@ -1248,6 +1248,40 @@ impl SemanticAnalyzer {
                 })
             }
 
+            Expression::Array { elements, location } => {
+                // Analyze each array element
+                let mut typed_elements = Vec::new();
+                let mut element_types = Vec::new();
+
+                for element in elements {
+                    let typed_element = self.analyze_expression(element)?;
+                    element_types.push(typed_element.type_info.clone());
+                    typed_elements.push(typed_element.expression);
+                }
+
+                // Determine the array element type
+                let array_element_type = if element_types.is_empty() {
+                    Type::Any
+                } else if element_types.iter().all(|t| t == &element_types[0]) {
+                    // All elements have the same type
+                    element_types[0].clone()
+                } else {
+                    // Mixed types, use union or Any for simplicity
+                    Type::Any
+                };
+
+                let array_type = Type::Array(Box::new(array_element_type));
+
+                Ok(TypedExpression {
+                    expression: Expression::Array {
+                        elements: typed_elements,
+                        location,
+                    },
+                    type_info: array_type,
+                    operand_types: None,
+                })
+            }
+
             _ => Err(DrafError::semantic_error(
                 expression.location().line,
                 expression.location().column,
