@@ -745,13 +745,27 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse return statement (placeholder)
+    /// Parse return statement
     fn parse_return_statement(&mut self) -> DrafResult<Statement> {
-        Err(DrafError::parse_error(
-            self.current_token.unwrap().line,
-            self.current_token.unwrap().column,
-            "Return statements not yet implemented",
-        ))
+        let location = self.current_location();
+        self.advance(); // consume 'return'
+
+        // Check if there's a return value
+        let value = if self.check(&TokenKind::Semicolon)
+            || self.check(&TokenKind::Newline)
+            || self.is_at_end()
+        {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+
+        // Consume semicolon if present
+        if self.check(&TokenKind::Semicolon) {
+            self.advance();
+        }
+
+        Ok(Statement::Return { value, location })
     }
 
     /// Parse break statement

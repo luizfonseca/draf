@@ -13,7 +13,7 @@ use inkwell::context::Context;
 
 use inkwell::basic_block::BasicBlock;
 use inkwell::module::Module;
-use inkwell::types::BasicTypeEnum;
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use std::collections::HashMap;
@@ -40,6 +40,8 @@ pub struct CodeGenerator<'ctx> {
     printf_function: Option<FunctionValue<'ctx>>,
     /// Stack of loop contexts for break/continue
     loop_stack: Vec<LoopContext<'ctx>>,
+    /// Storage for declared functions
+    functions: HashMap<String, FunctionValue<'ctx>>,
 }
 
 /// Context for a loop (for break/continue handling)
@@ -67,6 +69,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             current_function: None,
             printf_function: None,
             loop_stack: Vec::new(),
+            functions: HashMap::new(),
         };
 
         // Declare printf function for console output
@@ -470,40 +473,22 @@ impl<'ctx> CodeGenerator<'ctx> {
 
             TypedStatement::FunctionDeclaration {
                 name,
-                #[allow(unused)]
-                kind,
+                kind: _,
                 parameters,
                 return_type,
-                #[allow(unused)]
                 body,
                 location: _,
-            } => {
-                // For now, implement basic function declaration support
-                // TODO: Implement proper function codegen with LLVM functions
+            } => self.generate_function_declaration(name, parameters, return_type, *body),
 
-                // Create LLVM function type
-                let mut param_types = Vec::new();
-                #[allow(unused)]
-                for param in &parameters {
-                    // For now, all parameters are f64 (numbers)
-                    // TODO: Use actual parameter types
-                    param_types.push(self.context.f64_type().into());
-                }
-
-                // Determine return type
-                let fn_type = if return_type.is_some() {
-                    // TODO: Parse actual return type
-                    self.context.f64_type().fn_type(&param_types, false)
+            TypedStatement::Return { value, location: _ } => {
+                if let Some(return_expr) = value {
+                    let typed_return =
+                        TypedExpression::new(return_expr.expression, return_expr.type_info);
+                    let return_value = self.generate_expression(typed_return)?;
+                    self.builder.build_return(Some(&return_value)).unwrap();
                 } else {
-                    self.context.void_type().fn_type(&param_types, false)
-                };
-
-                // Add function to module
-                let _function = self.module.add_function(&name, fn_type, None);
-
-                // TODO: Generate function body
-                // For now, just skip function body generation
-
+                    self.builder.build_return(None).unwrap();
+                }
                 Ok(())
             }
         }
@@ -857,6 +842,12 @@ impl<'ctx> CodeGenerator<'ctx> {
                 }
             }
 
+            Expression::Call {
+                callee,
+                arguments,
+                location: _,
+            } => self.generate_function_call(*callee, arguments),
+
             Expression::ConsoleCall {
                 method, arguments, ..
             } => {
@@ -1188,6 +1179,268 @@ impl<'ctx> CodeGenerator<'ctx> {
                 "Type not yet implemented in codegen: {}",
                 ty
             ))),
+        }
+    }
+
+    /// Generate function declaration
+    fn generate_function_declaration(
+        &mut self,
+        name: String,
+        parameters: Vec<Parameter>,
+        return_type: Option<TypeAnnotation>,
+        body: TypedStatement,
+    ) -> DrafResult<()> {
+        // Create LLVM function type
+        let mut param_types: Vec<BasicMetadataTypeEnum> = Vec::new();
+        for param in &parameters {
+            let param_type = if let Some(type_ann) = &param.type_annotation {
+                // Convert type annotation to Type
+                let resolved_type = match type_ann {
+                    TypeAnnotation::Number { .. } => Type::Number,
+                    TypeAnnotation::String { .. } => Type::String,
+                    TypeAnnotation::Boolean { .. } => Type::Boolean,
+                    TypeAnnotation::Any { .. } => Type::Any,
+                    TypeAnnotation::Void { .. } => Type::Void,
+                    _ => Type::Any,
+                };
+                self.type_to_llvm_type(&resolved_type)?
+            } else {
+                self.type_to_llvm_type(&Type::Any)?
+            };
+            param_types.push(param_type.into());
+        }
+
+        // Determine return type
+        let llvm_return_type: BasicTypeEnum = if let Some(ret_type) = &return_type {
+            match ret_type {
+                TypeAnnotation::Number { .. } => self.context.f64_type().into(),
+                TypeAnnotation::String { .. } => {
+                    self.context.ptr_type(AddressSpace::default()).into()
+                }
+                TypeAnnotation::Boolean { .. } => self.context.bool_type().into(),
+                TypeAnnotation::Void { .. } => {
+                    return self.generate_void_function(name, parameters, param_types, body)
+                }
+                _ => return self.generate_void_function(name, parameters, param_types, body),
+            }
+        } else {
+            return self.generate_void_function(name, parameters, param_types, body);
+        };
+
+        // Create function type
+        let fn_type = llvm_return_type.fn_type(&param_types, false);
+
+        // Add function to module
+        let function = self.module.add_function(&name, fn_type, None);
+
+        // Store function for later calls
+        self.functions.insert(name.clone(), function);
+
+        // Save current state
+        let saved_function = self.current_function;
+        let saved_variables = self.variables.clone();
+        let saved_types = self.variable_types.clone();
+
+        // Set up function context
+        self.current_function = Some(function);
+        let entry_block = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry_block);
+
+        // Clear variables for function scope
+        self.variables.clear();
+        self.variable_types.clear();
+
+        // Add parameters to function scope
+        for (i, param) in parameters.iter().enumerate() {
+            let param_value = function.get_nth_param(i as u32).unwrap();
+            let param_type = if let Some(type_ann) = &param.type_annotation {
+                match type_ann {
+                    TypeAnnotation::Number { .. } => Type::Number,
+                    TypeAnnotation::String { .. } => Type::String,
+                    TypeAnnotation::Boolean { .. } => Type::Boolean,
+                    TypeAnnotation::Any { .. } => Type::Any,
+                    _ => Type::Any,
+                }
+            } else {
+                Type::Any
+            };
+
+            // Allocate space for parameter and store its value
+            let param_llvm_type = self.type_to_llvm_type(&param_type)?;
+            let param_ptr = self
+                .builder
+                .build_alloca(param_llvm_type, &param.name)
+                .unwrap();
+            self.builder.build_store(param_ptr, param_value).unwrap();
+
+            self.variables.insert(param.name.clone(), param_ptr);
+            self.variable_types.insert(param.name.clone(), param_type);
+        }
+
+        // Generate function body
+        self.generate_statement(body)?;
+
+        // If no explicit return, add return for non-void functions
+        let current_block = self.builder.get_insert_block().unwrap();
+        if current_block.get_terminator().is_none() {
+            // For non-void functions, we need a default return value
+            match llvm_return_type {
+                BasicTypeEnum::FloatType(_) => {
+                    let zero = self.context.f64_type().const_float(0.0);
+                    self.builder.build_return(Some(&zero)).unwrap();
+                }
+                BasicTypeEnum::IntType(_) => {
+                    let zero = self.context.bool_type().const_int(0, false);
+                    self.builder.build_return(Some(&zero)).unwrap();
+                }
+                BasicTypeEnum::PointerType(_) => {
+                    let null_ptr = self.context.ptr_type(AddressSpace::default()).const_null();
+                    self.builder.build_return(Some(&null_ptr)).unwrap();
+                }
+                _ => {
+                    self.builder.build_return(None).unwrap();
+                }
+            }
+        }
+
+        // Restore previous state
+        self.current_function = saved_function;
+        self.variables = saved_variables;
+        self.variable_types = saved_types;
+
+        // Restore builder position if we had a previous function
+        if let Some(prev_fn) = saved_function {
+            if let Some(last_block) = prev_fn.get_last_basic_block() {
+                self.builder.position_at_end(last_block);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate void function declaration
+    fn generate_void_function(
+        &mut self,
+        name: String,
+        parameters: Vec<Parameter>,
+        param_types: Vec<BasicMetadataTypeEnum<'ctx>>,
+        body: TypedStatement,
+    ) -> DrafResult<()> {
+        // Create void function type
+        let fn_type = self.context.void_type().fn_type(&param_types, false);
+
+        // Add function to module
+        let function = self.module.add_function(&name, fn_type, None);
+
+        // Store function for later calls
+        self.functions.insert(name.clone(), function);
+
+        // Save current state
+        let saved_function = self.current_function;
+        let saved_variables = self.variables.clone();
+        let saved_types = self.variable_types.clone();
+
+        // Set up function context
+        self.current_function = Some(function);
+        let entry_block = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry_block);
+
+        // Clear variables for function scope
+        self.variables.clear();
+        self.variable_types.clear();
+
+        // Add parameters to function scope
+        for (i, param) in parameters.iter().enumerate() {
+            let param_value = function.get_nth_param(i as u32).unwrap();
+            let param_type = if let Some(type_ann) = &param.type_annotation {
+                match type_ann {
+                    TypeAnnotation::Number { .. } => Type::Number,
+                    TypeAnnotation::String { .. } => Type::String,
+                    TypeAnnotation::Boolean { .. } => Type::Boolean,
+                    TypeAnnotation::Any { .. } => Type::Any,
+                    _ => Type::Any,
+                }
+            } else {
+                Type::Any
+            };
+
+            // Allocate space for parameter and store its value
+            let param_llvm_type = self.type_to_llvm_type(&param_type)?;
+            let param_ptr = self
+                .builder
+                .build_alloca(param_llvm_type, &param.name)
+                .unwrap();
+            self.builder.build_store(param_ptr, param_value).unwrap();
+
+            self.variables.insert(param.name.clone(), param_ptr);
+            self.variable_types.insert(param.name.clone(), param_type);
+        }
+
+        // Generate function body
+        self.generate_statement(body)?;
+
+        // Add void return if no explicit return
+        let current_block = self.builder.get_insert_block().unwrap();
+        if current_block.get_terminator().is_none() {
+            self.builder.build_return(None).unwrap();
+        }
+
+        // Restore previous state
+        self.current_function = saved_function;
+        self.variables = saved_variables;
+        self.variable_types = saved_types;
+
+        // Restore builder position if we had a previous function
+        if let Some(prev_fn) = saved_function {
+            if let Some(last_block) = prev_fn.get_last_basic_block() {
+                self.builder.position_at_end(last_block);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate function call
+    fn generate_function_call(
+        &mut self,
+        callee: Expression,
+        arguments: Vec<Expression>,
+    ) -> DrafResult<BasicValueEnum<'ctx>> {
+        // For now, only handle simple function name calls
+        if let Expression::Identifier { name, .. } = callee {
+            if let Some(function) = self.functions.get(&name).cloned() {
+                // Generate arguments
+                let mut arg_values = Vec::new();
+                for arg in arguments {
+                    let arg_type = self.infer_expression_type(&arg)?;
+                    let typed_arg = TypedExpression::new(arg, arg_type);
+                    let arg_value = self.generate_expression(typed_arg)?;
+                    arg_values.push(arg_value.into());
+                }
+
+                // Call function
+                let call_result = self
+                    .builder
+                    .build_call(function, &arg_values, "call")
+                    .unwrap();
+
+                // Handle return value
+                if let Some(return_value) = call_result.try_as_basic_value().left() {
+                    Ok(return_value)
+                } else {
+                    // Void function, return dummy value
+                    Ok(self.context.i32_type().const_int(0, false).into())
+                }
+            } else {
+                Err(DrafError::codegen_error(format!(
+                    "Function '{}' not found",
+                    name
+                )))
+            }
+        } else {
+            Err(DrafError::codegen_error(
+                "Complex function calls not yet implemented",
+            ))
         }
     }
 

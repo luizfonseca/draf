@@ -462,8 +462,18 @@ impl TypeContext {
     }
 
     /// Check if a variable is const
-    pub fn is_const_variable(&self, name: &str) -> bool {
+    pub fn is_const(&self, name: &str) -> bool {
         self.const_variables.contains(name)
+    }
+
+    /// Save current variable scope
+    pub fn save_scope(&self) -> HashMap<String, Type> {
+        self.variables.clone()
+    }
+
+    /// Restore variable scope
+    pub fn restore_scope(&mut self, saved_scope: HashMap<String, Type>) {
+        self.variables = saved_scope;
     }
 
     /// Get a variable's type

@@ -491,16 +491,27 @@ impl SemanticAnalyzer {
 
                 // Create function type
                 let function_type = Type::Function {
-                    params: param_types,
+                    params: param_types.clone(),
                     return_type: Box::new(resolved_return_type),
                 };
 
                 // Add function to symbol table
                 self.context.add_variable(name.clone(), function_type);
 
-                // TODO: Analyze function body with parameter scope
-                // For now, just analyze the body without parameter context
+                // Create a new scope for function analysis
+                let saved_scope = self.context.save_scope();
+
+                // Add parameters to function scope
+                for (param, param_type) in parameters.iter().zip(param_types.iter()) {
+                    self.context
+                        .add_variable(param.name.clone(), param_type.clone());
+                }
+
+                // Analyze function body with parameter scope
                 let typed_body = self.analyze_statement(*body)?;
+
+                // Restore original scope
+                self.context.restore_scope(saved_scope);
 
                 Ok(TypedStatement::FunctionDeclaration {
                     name,
@@ -508,6 +519,19 @@ impl SemanticAnalyzer {
                     parameters,
                     return_type,
                     body: Box::new(typed_body),
+                    location,
+                })
+            }
+
+            Statement::Return { value, location } => {
+                let typed_value = if let Some(expr) = value {
+                    Some(self.analyze_expression(expr)?)
+                } else {
+                    None
+                };
+
+                Ok(TypedStatement::Return {
+                    value: typed_value,
                     location,
                 })
             }
@@ -716,7 +740,7 @@ impl SemanticAnalyzer {
             } => {
                 // Check if trying to assign to a const variable before moving target
                 if let Expression::Identifier { name, .. } = target.as_ref() {
-                    if self.context.is_const_variable(name) {
+                    if self.context.is_const(name) {
                         return Err(DrafError::semantic_error(
                             location.line,
                             location.column,
@@ -1100,8 +1124,21 @@ impl SemanticAnalyzer {
                     typed_arguments.push(self.analyze_expression(arg)?);
                 }
 
-                // For now, assume function calls return Any type
-                // TODO: Implement proper function signature checking
+                // Determine return type based on function signature
+                let return_type = match &typed_callee.expression {
+                    Expression::Identifier { name, .. } => {
+                        if let Some(function_type) = self.context.get_variable(name) {
+                            match function_type {
+                                Type::Function { return_type, .. } => (**return_type).clone(),
+                                _ => Type::Any,
+                            }
+                        } else {
+                            Type::Any
+                        }
+                    }
+                    _ => Type::Any,
+                };
+
                 Ok(TypedExpression {
                     expression: Expression::Call {
                         callee: Box::new(typed_callee.expression),
@@ -1111,7 +1148,7 @@ impl SemanticAnalyzer {
                             .collect(),
                         location,
                     },
-                    type_info: Type::Any,
+                    type_info: return_type,
                     operand_types: None,
                 })
             }
@@ -1198,6 +1235,10 @@ pub enum TypedStatement {
         location: SourceLocation,
     },
     Continue {
+        location: SourceLocation,
+    },
+    Return {
+        value: Option<TypedExpression>,
         location: SourceLocation,
     },
     For {
