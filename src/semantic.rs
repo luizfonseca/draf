@@ -5,6 +5,7 @@
 
 use crate::ast::*;
 use crate::error::{DrafError, DrafResult, ErrorCollector};
+use crate::globals::GlobalRegistry;
 use crate::types::{BinaryOp, Type, TypeContext};
 use crate::typing;
 use std::collections::HashMap;
@@ -15,6 +16,8 @@ pub struct SemanticAnalyzer {
     context: TypeContext,
     /// Advanced typing context for type aliases and interfaces
     typing_context: typing::TypeContext,
+    /// Global objects registry
+    globals: GlobalRegistry,
     /// Error collector for gathering multiple errors
     errors: ErrorCollector,
     /// Whether to continue analysis after errors
@@ -27,6 +30,7 @@ impl SemanticAnalyzer {
         Self {
             context: TypeContext::new(),
             typing_context: typing::TypeContext::new(),
+            globals: GlobalRegistry::new(),
             errors: ErrorCollector::new(),
             continue_on_error: true,
         }
@@ -37,6 +41,7 @@ impl SemanticAnalyzer {
         Self {
             context: TypeContext::new(),
             typing_context: typing::TypeContext::new(),
+            globals: GlobalRegistry::new(),
             errors: ErrorCollector::new(),
             continue_on_error: false,
         }
@@ -623,6 +628,21 @@ impl SemanticAnalyzer {
                         type_info: var_type.clone(),
                         operand_types: None,
                     })
+                } else if self.globals.is_global(&name) {
+                    // This is a global object reference
+                    if let Some(global_type) = self.globals.get_constructor_type(&name) {
+                        Ok(TypedExpression {
+                            expression: Expression::Identifier { name, location },
+                            type_info: global_type.clone(),
+                            operand_types: None,
+                        })
+                    } else {
+                        Ok(TypedExpression {
+                            expression: Expression::Identifier { name, location },
+                            type_info: Type::Any,
+                            operand_types: None,
+                        })
+                    }
                 } else {
                     Err(DrafError::semantic_error(
                         location.line,
@@ -940,6 +960,26 @@ impl SemanticAnalyzer {
             } => {
                 let typed_object = self.analyze_expression(*object)?;
 
+                // Check if this is a property access on a global object
+                if let Expression::Identifier { name, .. } = &typed_object.expression {
+                    if self.globals.is_global(name) {
+                        if let Some(property_type) =
+                            self.globals.resolve_property_access(name, &property, true)
+                        {
+                            return Ok(TypedExpression {
+                                expression: Expression::MemberAccess {
+                                    object: Box::new(typed_object.expression),
+                                    property,
+                                    optional,
+                                    location,
+                                },
+                                type_info: property_type.clone(),
+                                operand_types: None,
+                            });
+                        }
+                    }
+                }
+
                 match &typed_object.type_info {
                     Type::Object(fields) => {
                         if let Some(field_type) = fields.get(&property) {
@@ -1168,8 +1208,31 @@ impl SemanticAnalyzer {
                     typed_arguments.push(self.analyze_expression(arg)?);
                 }
 
-                // For now, assume method calls return Any type
-                // TODO: Implement proper method signature checking
+                // Check if this is a method call on a global object
+                let return_type = match &typed_object.expression {
+                    Expression::Identifier { name, .. } => {
+                        // Check if this is a static method call on a global object
+                        if self.globals.is_global(name) {
+                            if let Some(global_method) =
+                                self.globals.resolve_method_call(name, &method, true)
+                            {
+                                global_method.return_type.clone()
+                            } else {
+                                Type::Any
+                            }
+                        } else {
+                            // Check if the object has a type that supports this method
+                            // For now, assume instance method calls return Any
+                            Type::Any
+                        }
+                    }
+                    _ => {
+                        // For other expressions, try to resolve instance methods
+                        // This could be enhanced to check object types
+                        Type::Any
+                    }
+                };
+
                 Ok(TypedExpression {
                     expression: Expression::MethodCall {
                         object: Box::new(typed_object.expression),
@@ -1180,7 +1243,7 @@ impl SemanticAnalyzer {
                             .collect(),
                         location,
                     },
-                    type_info: Type::Any,
+                    type_info: return_type,
                     operand_types: None,
                 })
             }
